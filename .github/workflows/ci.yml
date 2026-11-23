@@ -4,10 +4,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -16,8 +19,19 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install
-        run: npm ci || npm install
+      - name: Show environment
+        run: node -v && npm -v
+
+      # better-sqlite3 is a native module. It normally installs a prebuilt
+      # binary; if that download fails it compiles, which needs these.
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y python3 make g++
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check the native module loaded
+        run: node -e "require('better-sqlite3'); console.log('better-sqlite3 ok')"
 
       - name: Type check
         run: npm run typecheck
