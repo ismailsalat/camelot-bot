@@ -33,6 +33,7 @@ import * as purgeUi from '../purge/ui.js';
 import { exemptions, protectionFor, type MemberFacts, type Scope } from '../purge/policy.js';
 import { reviews, type Decision } from '../purge/session.js';
 import { executeKicks, revalidate } from '../purge/execute.js';
+import { NO_MENTIONS } from '../util/mentions.js';
 import { isSoftError, soft } from '../util/discord.js';
 import { log } from '../logger.js';
 
@@ -59,7 +60,11 @@ export async function routeInteraction(interaction: Interaction): Promise<void> 
 async function replySafely(interaction: Interaction, message: string): Promise<void> {
   if (!interaction.isRepliable()) return;
   try {
-    const payload = { components: [errorNotice(message)], flags: V2_FLAGS } as never;
+    const payload = {
+      components: [errorNotice(message)],
+      flags: V2_FLAGS,
+      allowedMentions: NO_MENTIONS,
+    } as never;
     if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
     else await interaction.reply(payload);
   } catch {
@@ -94,26 +99,27 @@ async function onCommand(interaction: ChatInputCommandInteraction): Promise<void
 
   switch (interaction.commandName) {
     case 'help':
-      await interaction.reply({ components: [renderHelpHome(member, interaction.client)], flags: V2_FLAGS } as never);
+      await interaction.reply({ components: [renderHelpHome(member, interaction.client)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
       return;
 
     case 'settings': {
       if (!isAdmin(member)) {
-        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS } as never);
+        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
         return;
       }
-      await interaction.reply({ components: [renderSettingsHome(member)], flags: V2_FLAGS } as never);
+      await interaction.reply({ components: [renderSettingsHome(member)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
       return;
     }
 
     case 'activity': {
       if (!isModuleEnabled(settings, 'activity')) {
-        await interaction.reply({ components: [notice('Activity is turned off.')], flags: V2_FLAGS } as never);
+        await interaction.reply({ components: [notice('Activity is turned off.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
         return;
       }
       await interaction.reply({
         components: [activityUi.renderMemberCard(member, member, interaction.client)],
         flags: V2_FLAGS,
+        allowedMentions: NO_MENTIONS,
       } as never);
       return;
     }
@@ -123,11 +129,12 @@ async function onCommand(interaction: ChatInputCommandInteraction): Promise<void
         await interaction.reply({
           components: [notice('The Purge needs Activity turned on.')],
           flags: V2_FLAGS,
+          allowedMentions: NO_MENTIONS,
         } as never);
         return;
       }
       if (!isAdmin(member)) {
-        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS } as never);
+        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
         return;
       }
       await interaction.reply({
@@ -135,12 +142,13 @@ async function onCommand(interaction: ChatInputCommandInteraction): Promise<void
           purgeUi.renderStart(interaction.guild, purgeUi.scopeCounts(interaction.guild), interaction.client),
         ],
         flags: V2_FLAGS,
+        allowedMentions: NO_MENTIONS,
       } as never);
       return;
     }
 
     default:
-      await interaction.reply({ components: [errorNotice('I do not know that one.')], flags: V2_FLAGS } as never);
+      await interaction.reply({ components: [errorNotice('I do not know that one.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
   }
 }
 
@@ -343,7 +351,7 @@ async function onActivity(
       // Fetching members can take a beat, so acknowledge first.
       await interaction.deferUpdate();
       const board = await activityUi.renderBoard(guild, Number(args[0] ?? 0), member, interaction.client);
-      await interaction.editReply({ components: [board], flags: V2_FLAGS } as never);
+      await interaction.editReply({ components: [board], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
       return;
     }
 
@@ -447,7 +455,7 @@ async function onPurge(
 
       const candidates = purgeUi.gatherCandidates(guild, scope);
       if (candidates.length === 0) {
-        await interaction.editReply({ components: [purgeUi.renderEmpty(scope)], flags: V2_FLAGS } as never);
+        await interaction.editReply({ components: [purgeUi.renderEmpty(scope)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
         return;
       }
 
@@ -507,6 +515,7 @@ async function onPurge(
       await interaction.editReply({
         components: [purgeUi.renderConfirm(verdicts)],
         flags: V2_FLAGS,
+        allowedMentions: NO_MENTIONS,
       } as never);
       return;
     }
@@ -530,6 +539,7 @@ async function onPurge(
       await interaction.editReply({
         components: [purgeUi.renderOutcome(outcomes)],
         flags: V2_FLAGS,
+        allowedMentions: NO_MENTIONS,
       } as never);
       return;
     }
@@ -561,7 +571,7 @@ async function showCardDeferred(
   const settings = getSettings(guild.id);
   const userId = session.candidates[session.cursor];
   if (!userId) {
-    await interaction.editReply({ components: [purgeUi.renderSummary(session, guild)], flags: V2_FLAGS } as never);
+    await interaction.editReply({ components: [purgeUi.renderSummary(session, guild)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
     return;
   }
   const target = await soft('fetch member', () => guild.members.fetch(userId));
@@ -593,6 +603,7 @@ async function showCardDeferred(
       ),
     ],
     flags: V2_FLAGS,
+    allowedMentions: NO_MENTIONS,
   } as never);
 }
 
@@ -644,7 +655,7 @@ async function onModal(interaction: ModalSubmitInteraction): Promise<void> {
     const verdicts = await revalidate(member.guild, queued, member.id, { decidedAt: session.updatedAt });
     const outcomes = await executeKicks(member.guild, verdicts, member.id, 'Camelot review');
     reviews.finish(session.id);
-    await interaction.editReply({ components: [purgeUi.renderOutcome(outcomes)], flags: V2_FLAGS } as never);
+    await interaction.editReply({ components: [purgeUi.renderOutcome(outcomes)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
   }
 }
 

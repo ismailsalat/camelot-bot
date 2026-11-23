@@ -108,7 +108,7 @@ export function renderMemberCard(member: GuildMember, viewer: GuildMember, clien
   const body = container()
     .addTextDisplayComponents(heading(`${emojiFor(settings, 'sword', client)}  CAMELOT ACTIVITY`))
     .addSeparatorComponents(divider())
-    .addSectionComponents(sectionWithThumb(`**${member.displayName}**\n${lines.join('\n')}`, avatar(member)));
+    .addSectionComponents(sectionWithThumb(`${member.toString()}  ·  **${member.displayName}**\n${lines.join('\n')}`, avatar(member)));
 
   if (live.inVoice) {
     body.addTextDisplayComponents(

@@ -172,7 +172,7 @@ export function renderCard(context: CardContext, client?: Client) {
     .addSeparatorComponents(divider())
     .addSectionComponents(
       sectionWithThumb(
-        `**${member.displayName}**\n${stats.join('\n')}`,
+        `${member.toString()}  ·  **${member.displayName}**\n${stats.join('\n')}`,
         member.displayAvatarURL({ extension: 'png', size: 128 }),
       ),
     )
