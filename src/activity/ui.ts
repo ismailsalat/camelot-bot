@@ -108,7 +108,9 @@ export function renderMemberCard(member: GuildMember, viewer: GuildMember, clien
   const body = container()
     .addTextDisplayComponents(heading(`${emojiFor(settings, 'sword', client)}  CAMELOT ACTIVITY`))
     .addSeparatorComponents(divider())
-    .addSectionComponents(sectionWithThumb(`${member.toString()}  ·  **${member.displayName}**\n${lines.join('\n')}`, avatar(member)));
+    .addSectionComponents(
+      sectionWithThumb(`${member.toString()}  ·  **${member.displayName}**\n${lines.join('\n')}`, avatar(member)),
+    );
 
   if (live.inVoice) {
     body.addTextDisplayComponents(
@@ -232,7 +234,9 @@ export async function renderBoard(guild: Guild, page: number, viewer: GuildMembe
         slice
           .map((entry, index) => {
             const rank = current * BOARD_PAGE_SIZE + index + 1;
-            return `\`${String(rank).padStart(2, ' ')}\`  **${entry.name}**  ·  ${entry.score}  ·  ${entry.activeDays}d`;
+            // Mentions are clickable, so a profile is one tap from the board.
+            // Nothing here pings: every send suppresses mentions.
+            return `\`${String(rank).padStart(2, ' ')}\`  <@${entry.userId}>  ·  **${entry.score}**  ·  ${entry.activeDays}d`;
           })
           .join('\n'),
       ),

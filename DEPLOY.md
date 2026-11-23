@@ -60,6 +60,7 @@ Railway redeploys on its own when you push to `main`.
    | `DISCORD_TOKEN` | your bot token |
    | `DISCORD_CLIENT_ID` | your application ID |
    | `DATABASE_PATH` | `/data/camelot.sqlite` |
+   | `COMMAND_PREFIX` | `!` *(optional)* — prefix for text commands like `!allies` |
    | `LOG_LEVEL` | `info` *(optional)* |
 
 4. **⚠️ Add a Volume.** Service → **Settings** → **Volumes** → **New Volume**,
@@ -79,8 +80,14 @@ Railway redeploys on its own when you push to `main`.
 
 ### Registering the slash command
 
-Do this once (and again whenever the command definition changes). Easiest from
-your own machine, pointing at the same app:
+**Camelot does this itself.** On boot it compares its command set with what it
+last published and calls Discord only if they differ, so a new command appears
+after a deploy with nothing for you to run. The log line to look for is
+`Published 5 command(s) globally`. An ordinary restart logs nothing, because
+nothing changed.
+
+If you would rather do it by hand, from your own machine pointing at the same
+app:
 
 ```bash
 npm install
@@ -88,13 +95,12 @@ cp .env.example .env     # token + client id
 npm run register
 ```
 
-Or as a one-off inside Railway: temporarily set the service's start command to
-`node dist/commands/register.js`, deploy, watch it log `Registered 1 command(s)`,
-then set it back to `node dist/index.js`.
+Leave `DEV_GUILD_ID` empty in production so commands register globally. Set it
+to a server ID while developing — guild commands appear instantly, global ones
+can take up to an hour the first time.
 
-Leave `DEV_GUILD_ID` empty in production so the command registers globally. Set
-it to a server ID while developing — guild commands appear instantly, global
-ones can take up to an hour the first time.
+If a publish fails (a bad token, Discord down), Camelot logs it and keeps
+running on the commands already registered, then tries again next boot.
 
 ---
 

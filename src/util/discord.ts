@@ -11,6 +11,12 @@ import { log } from '../logger.js';
 /** Discord error codes we treat as "expected, keep going". */
 export const SOFT_ERRORS = new Set<number | string>([
   10003, // Unknown channel
+  // Unknown member / unknown user. Everyday, not exceptional: Camelot looks up
+  // members who may have left on almost every screen — a purge revalidation,
+  // an activity card, a leaderboard row, `!allies @someone`. Logging those at
+  // error level buried the real failures in noise.
+  10007, // Unknown member
+  10013, // Unknown user
   10008, // Unknown message
   10062, // Unknown interaction (expired)
   50001, // Missing access

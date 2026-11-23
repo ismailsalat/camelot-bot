@@ -98,6 +98,16 @@ export interface RolePolicy {
 export interface GuildSettings {
   timezone: string;
 
+  core: {
+    /**
+     * Prefix for text commands in this server. `null` means "whatever
+     * COMMAND_PREFIX says", so a server that never sets one follows the host.
+     */
+    prefix: string | null;
+    /** Text commands can be switched off entirely, leaving only slash commands. */
+    textCommands: boolean;
+  };
+
   /** Core is always on and is not listed here. */
   modules: {
     clips: boolean;
@@ -196,6 +206,8 @@ export interface GuildSettings {
 
 export const DEFAULT_SETTINGS: GuildSettings = {
   timezone: 'America/Los_Angeles',
+
+  core: { prefix: null, textCommands: true },
 
   modules: { clips: true, activity: true, purge: true },
 

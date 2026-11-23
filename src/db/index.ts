@@ -222,7 +222,38 @@ const MIGRATIONS: { id: string; sql: string; after?: (db: Db) => void }[] = [
       CREATE INDEX IF NOT EXISTS idx_purge_log_guild ON purge_log (guild_id, at);
     `,
   },
+  {
+    id: '004_app_meta',
+    sql: `
+      CREATE TABLE IF NOT EXISTS app_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `,
+  },
 ];
+
+/**
+ * A tiny key-value store for facts about this deployment rather than about a
+ * server — currently just the shape of the slash commands last published, so
+ * boot can tell whether Discord needs telling about a new one.
+ */
+export const meta = {
+  get(key: string): string | null {
+    const row = getDb().prepare(`SELECT value FROM app_meta WHERE key = ?`).get(key) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  },
+  set(key: string, value: string): void {
+    getDb()
+      .prepare(
+        `INSERT INTO app_meta (key, value) VALUES (?, ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
+  },
+};
 
 /**
  * Clips recorded before the emoji slots existed were reacted with the old

@@ -32,7 +32,7 @@ file, and it is exactly what CI does.
 ```bash
 npm install
 cp .env.example .env     # paste your bot token + application id
-npm run register         # publish the four slash commands
+npm run register         # optional: Camelot also does this itself at boot
 npm run dev              # start with live reload
 ```
 
@@ -99,20 +99,67 @@ See **[DEPLOY.md](DEPLOY.md)** for the step-by-step version. The short form:
    `DATABASE_PATH=/data/camelot.sqlite`.
 4. **Add a Volume**, mount path `/data`. Without it the database is wiped on
    every deploy and your settings and sessions go with it.
-5. Run `npm run register` once (locally, or as a one-off Railway command).
+5. Nothing to run — Camelot publishes its slash commands itself on first boot.
 
 ---
 
 ## The commands
 
-| Command | Who | What |
-|---|---|---|
-| `/help` | everyone | What Camelot does, generated from the live command registry |
-| `/settings` | admins | One place to configure everything |
-| `/activity` | everyone | Your own activity; admins can look up anyone |
-| `/purge` | admins | Review members one at a time |
+| Command | Also | Who | What |
+|---|---|---|---|
+| `/help` | `!help` | everyone | What Camelot does, generated from the live command registry |
+| `/settings` | — | admins | One place to configure everything |
+| `/activity` | `/allies`, `!allies` | everyone | Your own activity; admins can look up anyone |
+| `/purge` | `!purge @someone` | admins | Review members one at a time |
+
+`/activity` and `/purge` both take a mention, which skips the browsing:
+
+```
+/allies @gail        her activity card
+/purge @gail         straight to her review card, with a confirmation step
+```
 
 Clips needs no command — it just works in the channel you point it at.
+
+### Text commands
+
+The same commands work with a prefix, which is faster to type than finding
+someone in a list:
+
+```
+!allies          !allies @gail
+!help            !purge @gail
+```
+
+`COMMAND_PREFIX` sets the default (see `.env.example`). Any server owner can
+override it for their own server in `/settings` → Modules → **Change prefix**,
+and clear it to follow the host default again. Text commands can be switched
+off entirely on the same screen.
+
+A prefix must be 1–3 symbols. Letters and digits are rejected, because they
+would turn ordinary sentences into commands, and so are `/`, `@`, `#`, `<` and
+a backtick, which Discord treats specially. A bad value falls back to `!`
+rather than stopping the bot.
+
+Two commands are deliberately slash-only, because a text command answers with a
+message everyone in the channel can read:
+
+- `!settings` points you at `/settings` — channel ids and role setup are not
+  for a public channel.
+- `!purge` with nobody named points you at `/purge`, so a whole swipe review
+  never plays out in public. `!purge @someone` works normally.
+
+A text command doesn't count as activity. Otherwise `!allies` would be a way to
+farm the number `!allies` reports.
+
+### Keeping Discord in step
+
+Camelot publishes its own slash commands at boot, and only when the set has
+actually changed — so an ordinary restart makes no API call. Adding an option
+to an existing command counts as a change, so `/allies @someone` cannot end up
+registered without somewhere to put the mention.
+
+`npm run register` still exists if you prefer to do it by hand.
 
 ## Modules
 
@@ -239,12 +286,21 @@ needs the configured quiet period, **21 fully observed days of tracking**, and
 to be past the **30-day newcomer grace period** before they can appear.
 
 Nothing happens until the end, where you get the counts and the exact list.
-Before any kick, every member is re-checked: still present, not the owner, not
-protected, no live exemption, actor still an admin, bot still permitted, role
-hierarchy allows it, data still reliable, and **no new activity since you
-decided**. Anything that changed is skipped and shown to you. Five or more
-removals asks you to type the number. Failures are handled one at a time, every
-outcome is logged, and nothing is announced publicly.
+Before any kick, every member is re-checked: still present, not the owner,
+actor still an admin, bot still permitted, role hierarchy allows it, protection
+and exemptions as they stand now, data still reliable, and **no new activity
+since you decided**.
+
+The confirmation screen sorts what it found into three groups:
+
+- **Ready** — nothing to flag
+- **Flagged** — a caution, with the reason; yours to override
+- **Can't be removed** — a wall, with no override
+
+Overriding a caution gets its own confirmation screen listing each person and
+what is being overridden. Five or more removals also asks you to type the
+number. Failures are handled one at a time, every outcome is logged, and
+nothing is announced publicly.
 
 ### Protected roles
 
@@ -253,9 +309,17 @@ ordinary unless you say otherwise; set the roles that genuinely protect — like
 **The Round Table** — in `/settings → Permissions`.
 
 Role policies are evaluated in priority order and **the first match decides** —
-they never stack. Absolute protection is a separate override: any role granting
-it means the member cannot be purged at all, and their Purge button is
-disabled. The server owner is always protected.
+they never stack.
+
+Protection is a caution, not a veto. An admin who has looked at the person is
+better placed to judge than a role list is, so a protected member keeps a
+working **Purge anyway** button and the reason is shown plainly on the card.
+
+Absolute protection is the exception, and it is deliberately narrower: it is a
+hard wall for admins, and a caution for the server owner whose list it is. Set
+it on roles you want putting out of an admin's reach.
+
+The server owner can never be removed by anyone, because Discord refuses it.
 
 ### Temporary exemptions
 
@@ -338,7 +402,8 @@ flags unreachable emojis, and says whether tracking has enough history yet.
 | Activity shows nothing | Tracking needs a full day before anything is "observed" |
 | The Purge says nobody is inactive | It needs 21 fully observed days before judging anyone |
 | `/purge` missing | Needs Activity on, and Kick Members for the bot |
-| Commands missing | Run `npm run register`; global commands can take an hour the first time |
+| Commands missing | Camelot publishes them at boot; a brand new global command can still take up to an hour to appear |
+| `!allies` does nothing | Check the prefix in `/settings` → Modules, and that text commands are on |
 | `npm install` fails on `better-sqlite3` | Native module. The Dockerfile installs what it needs; locally you may need build tools |
 
 ## Known limits

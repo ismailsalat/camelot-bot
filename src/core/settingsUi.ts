@@ -24,7 +24,8 @@ import { button, container, divider, heading, row, selectRow, text, ACCENT_MUTED
 import { Ids } from './ids.js';
 import { groupLabel } from './help.js';
 import { canEditGroup, DELEGATABLE_GROUPS, tierOf } from './permissions.js';
-import { MODULES, isModuleEnabled, moduleBlockedReason } from './registry.js';
+import { prefixFor } from './prefix.js';
+import { MODULES, isModuleEnabled, moduleBlockedReason, moduleByKey } from './registry.js';
 import { componentEmojiFor, emojiFor, parseEmoji } from '../util/emoji.js';
 import { healthGlyph, overallStatus } from './status.js';
 
@@ -96,7 +97,10 @@ function renderModules(member: GuildMember) {
     const on = isModuleEnabled(settings, module.key);
     const blocked = moduleBlockedReason(settings, module.key);
     const state = module.key === 'core' ? 'Always on' : on ? 'On' : 'Off';
-    const needs = module.requires.length > 0 ? ` · needs ${module.requires.join(', ')}` : '';
+    const needs =
+      module.requires.length > 0
+        ? ` · needs ${module.requires.map((key) => moduleByKey(key).name).join(' and ')}`
+        : '';
     body.addTextDisplayComponents(
       text(`**${module.name}** — ${state}${needs}\n${module.blurb}${blocked && !on ? `\n_${blocked}_` : ''}`),
     );
@@ -110,8 +114,54 @@ function renderModules(member: GuildMember) {
     ),
   );
 
-  body.addSeparatorComponents(divider()).addActionRowComponents(row(...toggles)).addActionRowComponents(backRow());
+  // Text commands live here rather than in their own category: one line and
+  // one button does not justify a whole screen.
+  const prefix = prefixFor(member.guild.id);
+  const own = settings.core.prefix;
+  body
+    .addSeparatorComponents(divider())
+    .addTextDisplayComponents(
+      text(
+        `**Text commands** — ${settings.core.textCommands ? 'On' : 'Off'}\n` +
+          `Short versions of the slash commands: \`${prefix}allies\`, \`${prefix}purge @someone\`.\n` +
+          `Prefix: \`${prefix}\`${own ? '' : ' _(from the host settings)_'}`,
+      ),
+    );
+
+  body
+    .addSeparatorComponents(divider())
+    .addActionRowComponents(row(...toggles))
+    .addActionRowComponents(
+      row(
+        button(
+          Ids.settingsToggle('core.textCommands'),
+          settings.core.textCommands ? 'Turn off text commands' : 'Turn on text commands',
+          settings.core.textCommands ? ButtonStyle.Secondary : ButtonStyle.Success,
+        ),
+        button(Ids.settingsText('core.prefix'), 'Change prefix', ButtonStyle.Secondary),
+      ),
+    )
+    .addActionRowComponents(backRow());
   return body;
+}
+
+/** Owner only: the one free-text setting, so it validates on the way in. */
+export function buildPrefixModal(settings: GuildSettings, guildId: string): ModalBuilder {
+  return new ModalBuilder()
+    .setCustomId(Ids.settingsText('core.prefix'))
+    .setTitle('Text command prefix')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId(Ids.settingsInput)
+          .setLabel('1-3 symbols, or blank for the default')
+          .setPlaceholder('!')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
+          .setMaxLength(3)
+          .setValue(settings.core.prefix ?? prefixFor(guildId)),
+      ),
+    );
 }
 
 /* --------------------------------- channels -------------------------------- */

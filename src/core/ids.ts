@@ -56,7 +56,18 @@ export const Ids = {
   purgeList: () => makeId('p.list'),
   purgeResume: () => makeId('p.res'),
   purgeConfirm: () => makeId('p.ok'),
-  purgeExecute: () => makeId('p.go'),
+  purgeExecute: (mode: string) => makeId('p.go', mode),
+  /** The extra "are you sure" shown only when overriding a protection. */
+  purgeOverride: () => makeId('p.ovr'),
   purgeCancel: () => makeId('p.no'),
   purgeConfirmInput: 'count',
+
+  /**
+   * One named member, straight from `/purge @user`. These carry the admin who
+   * asked, because a text command's card is a public message and a removal
+   * button on it must belong to the person who opened it.
+   */
+  purgeOne: (userId: string, actorId: string) => makeId('p.1', userId, actorId),
+  purgeOneAsk: (userId: string, actorId: string) => makeId('p.1a', userId, actorId),
+  purgeOneGo: (userId: string, actorId: string) => makeId('p.1g', userId, actorId),
 } as const;

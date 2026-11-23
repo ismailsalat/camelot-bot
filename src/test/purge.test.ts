@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, clearSettingsCache, type GuildSettings } from '../db/
 import {
   exemptions,
   isProtected,
+  isWall,
   protectionFor,
   selectCandidates,
   type CandidateInput,
@@ -287,5 +288,258 @@ describe('removal log', () => {
     purgeLog.record({ guildId: GUILD, actorId: 'admin', userId: 'a', reason: 'review', success: true });
     purgeLog.prune(GUILD, 0, Date.now() + 86_400_000);
     assert.equal(purgeLog.recent(GUILD).length, 0);
+  });
+});
+
+describe('warnings can be overridden, hard blocks cannot', () => {
+  const verdict = (userId: string, severity: 'ok' | 'warn' | 'block') => ({
+    userId,
+    member: { id: userId, displayName: userId } as never,
+    ok: severity === 'ok',
+    severity,
+    reason: null,
+    detail: '',
+  });
+
+  it('removes only the ready ones by default', async () => {
+    const { removable } = await import('../purge/execute.js');
+    const list = [verdict('ready', 'ok'), verdict('thin', 'warn'), verdict('owner', 'block')];
+    assert.deepEqual(
+      removable(list, false).map((entry) => entry.userId),
+      ['ready'],
+    );
+  });
+
+  it('includes the flagged ones when the admin says so', async () => {
+    const { removable } = await import('../purge/execute.js');
+    const list = [verdict('ready', 'ok'), verdict('thin', 'warn'), verdict('owner', 'block')];
+    assert.deepEqual(
+      removable(list, true).map((entry) => entry.userId),
+      ['ready', 'thin'],
+      'a thin tracking history is a warning, not a veto',
+    );
+  });
+
+  it('never includes a hard block, whatever is asked for', async () => {
+    const { removable } = await import('../purge/execute.js');
+    const list = [verdict('owner', 'block'), verdict('protected', 'block')];
+    assert.equal(removable(list, true).length, 0, 'the owner and protected roles are not overridable');
+  });
+
+  it('lets a brand new server still remove somebody', async () => {
+    // Day one: no tracked history at all, so everyone is flagged, not blocked.
+    const { removable } = await import('../purge/execute.js');
+    const list = [verdict('a', 'warn'), verdict('b', 'warn')];
+    assert.equal(removable(list, false).length, 0, 'nothing happens by default');
+    assert.equal(removable(list, true).length, 2, 'but the admin can still act');
+  });
+});
+
+describe('what an admin may override and what nobody may', () => {
+  const PROTECTED_ROLE = 'r-mod';
+  const ABSOLUTE_ROLE = 'r-locked';
+
+  const settings = (): GuildSettings => ({
+    ...DEFAULT_SETTINGS,
+    purge: {
+      ...DEFAULT_SETTINGS.purge,
+      rolePolicies: [{ roleId: PROTECTED_ROLE, effect: 'protect' }],
+      absoluteRoles: [ABSOLUTE_ROLE],
+    },
+  });
+
+  it('calls the server owner a wall for everybody, owner included', () => {
+    const protection = protectionFor(facts({ isOwner: true }), settings(), null, NOW);
+    assert.ok(isWall(protection, 'admin'));
+    assert.ok(isWall(protection, 'owner'), 'Discord will not let anyone kick the owner');
+  });
+
+  it('calls an absolute role a wall for an admin but not for the owner', () => {
+    const protection = protectionFor(facts({ roleIds: [ABSOLUTE_ROLE] }), settings(), null, NOW);
+    assert.ok(isWall(protection, 'admin'), 'the owner locked this one');
+    assert.ok(!isWall(protection, 'owner'), 'but it is the owner’s own list to unlock');
+  });
+
+  it('treats an ordinary protected role as a caution, not a wall', () => {
+    const protection = protectionFor(facts({ roleIds: [PROTECTED_ROLE] }), settings(), null, NOW);
+    assert.ok(isProtected(protection), 'still protected');
+    assert.ok(!isWall(protection, 'admin'), 'an admin can override their own setting');
+  });
+
+  it('treats an away mark as a caution', () => {
+    const protection = protectionFor(facts(), settings(), { until: NOW + 86_400_000, note: null }, NOW);
+    assert.equal(protection.kind, 'exempt');
+    assert.ok(!isWall(protection, 'admin'));
+  });
+
+  it('"everyone I can remove" now includes a member an admin may override', () => {
+    const f = facts({ roleIds: [PROTECTED_ROLE] });
+    const input: CandidateInput = {
+      facts: f,
+      summary: summary({ userId: f.userId }),
+      protection: protectionFor(f, settings(), null, NOW),
+    };
+    assert.equal(
+      selectCandidates([input], 'eligible', settings(), NOW, 'admin').length,
+      1,
+      'the button says everyone I can remove, and an admin can remove them',
+    );
+  });
+
+  it('"everyone I can remove" still excludes an absolute role from an admin', () => {
+    const f = facts({ roleIds: [ABSOLUTE_ROLE] });
+    const input: CandidateInput = {
+      facts: f,
+      summary: summary({ userId: f.userId }),
+      protection: protectionFor(f, settings(), null, NOW),
+    };
+    assert.equal(selectCandidates([input], 'eligible', settings(), NOW, 'admin').length, 0);
+    assert.equal(
+      selectCandidates([input], 'eligible', settings(), NOW, 'owner').length,
+      1,
+      'the owner who locked it can still see it',
+    );
+  });
+
+  it('keeps the automatic inactive filter conservative', () => {
+    // A protected role or an away mark keeps you out of the automatic sweep —
+    // that is the point of setting one. Everyone, and naming someone, still
+    // reach them.
+    for (const roleIds of [[PROTECTED_ROLE], [ABSOLUTE_ROLE]]) {
+      const f = facts({ roleIds });
+      const input: CandidateInput = {
+        facts: f,
+        summary: summary({ userId: f.userId }),
+        protection: protectionFor(f, settings(), null, NOW),
+      };
+      assert.equal(selectCandidates([input], 'inactive', settings(), NOW, 'owner').length, 0, roleIds.join());
+      assert.equal(selectCandidates([input], 'all', settings(), NOW, 'owner').length, 1, roleIds.join());
+    }
+  });
+
+  it('marks an overridable member reviewable, and a walled one not', () => {
+    const build = (roleIds: string[]): CandidateInput => {
+      const f = facts({ roleIds });
+      return {
+        facts: f,
+        summary: summary({ userId: f.userId }),
+        protection: protectionFor(f, settings(), null, NOW),
+      };
+    };
+    const soft = selectCandidates([build([PROTECTED_ROLE])], 'all', settings(), NOW, 'admin')[0]!;
+    const hard = selectCandidates([build([ABSOLUTE_ROLE])], 'all', settings(), NOW, 'admin')[0]!;
+    assert.equal(soft.reviewable, true);
+    assert.equal(hard.reviewable, false);
+  });
+});
+
+describe('a hard block never reaches a kick', () => {
+  function spyMember(id: string) {
+    const calls: string[] = [];
+    return {
+      calls,
+      member: {
+        id,
+        displayName: id,
+        kick: async (reason: string) => {
+          calls.push(reason);
+          return undefined;
+        },
+      } as never,
+    };
+  }
+
+  const guild = { id: GUILD } as never;
+
+  it('kicks the ready one and leaves the blocked one alone', async () => {
+    const { executeKicks } = await import('../purge/execute.js');
+    const ready = spyMember('ready');
+    const walled = spyMember('walled');
+
+    const outcomes = await executeKicks(
+      guild,
+      [
+        { userId: 'ready', member: ready.member, ok: true, severity: 'ok', reason: null, detail: '' },
+        { userId: 'walled', member: walled.member, ok: false, severity: 'block', reason: 'owner', detail: '' },
+      ],
+      'admin-1',
+      'test',
+      { includeWarned: true },
+    );
+
+    assert.equal(ready.calls.length, 1, 'the ready one went');
+    assert.equal(walled.calls.length, 0, 'the walled one did not, even with includeWarned');
+    assert.deepEqual(outcomes.map((outcome) => outcome.userId), ['ready']);
+  });
+
+  it('kicks a flagged member only when the override is asked for', async () => {
+    const { executeKicks } = await import('../purge/execute.js');
+
+    const quiet = spyMember('flagged');
+    await executeKicks(
+      guild,
+      [{ userId: 'flagged', member: quiet.member, ok: false, severity: 'warn', reason: 'unreliable', detail: '' }],
+      'admin-1',
+      'test',
+      {},
+    );
+    assert.equal(quiet.calls.length, 0, 'no override asked for, so nothing happened');
+
+    const loud = spyMember('flagged');
+    await executeKicks(
+      guild,
+      [{ userId: 'flagged', member: loud.member, ok: false, severity: 'warn', reason: 'unreliable', detail: '' }],
+      'admin-1',
+      'test',
+      { includeWarned: true },
+    );
+    assert.equal(loud.calls.length, 1, 'the admin said so, so it happened');
+  });
+
+  it('kicks nobody twice on a double submit', async () => {
+    const { executeKicks } = await import('../purge/execute.js');
+    const once = spyMember('dupe');
+    const verdict = {
+      userId: 'dupe',
+      member: once.member,
+      ok: true,
+      severity: 'ok' as const,
+      reason: null,
+      detail: '',
+    };
+    await executeKicks(guild, [verdict, verdict], 'admin-1', 'test', {});
+    assert.equal(once.calls.length, 1);
+  });
+
+  it('carries on past a failure instead of stopping the batch', async () => {
+    const { executeKicks } = await import('../purge/execute.js');
+    const broken = {
+      id: 'broken',
+      displayName: 'broken',
+      kick: async () => {
+        throw new Error('network');
+      },
+    } as never;
+    const fine = spyMember('fine');
+
+    const outcomes = await executeKicks(
+      guild,
+      [
+        { userId: 'broken', member: broken, ok: true, severity: 'ok', reason: null, detail: '' },
+        { userId: 'fine', member: fine.member, ok: true, severity: 'ok', reason: null, detail: '' },
+      ],
+      'admin-1',
+      'test',
+      {},
+    );
+
+    assert.equal(fine.calls.length, 1, 'one failure must not cost the rest');
+    assert.deepEqual(
+      outcomes.map((outcome) => [outcome.userId, outcome.success]),
+      [
+        ['broken', false],
+        ['fine', true],
+      ],
+    );
   });
 });

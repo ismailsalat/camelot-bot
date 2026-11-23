@@ -17,9 +17,11 @@ import { Ids, makeId, parseId } from '../core/ids.js';
 import {
   COMMANDS,
   MODULES,
+  allCommandNames,
   commandsFor,
   isModuleEnabled,
   moduleBlockedReason,
+  resolveCommand,
   tierAllows,
   visibleCommands,
 } from '../core/registry.js';
@@ -126,19 +128,69 @@ describe('custom ids', () => {
 });
 
 describe('the registry is the single source of truth', () => {
-  it('registers exactly the commands it documents', () => {
+  it('registers exactly the commands it documents, aliases included', () => {
     const built = buildCommands().map((command) => command.toJSON());
-    assert.deepEqual(
-      built.map((command) => command.name).sort(),
-      COMMANDS.map((command) => command.name).sort(),
-    );
+    assert.deepEqual(built.map((command) => command.name).sort(), allCommandNames().sort());
     for (const command of built) {
       assert.ok(command.description.length > 0 && command.description.length <= 100, command.name);
     }
   });
 
+  it('registers no name twice', () => {
+    const names = allCommandNames();
+    assert.equal(new Set(names).size, names.length, names.join(', '));
+  });
+
+  it('resolves every alias back to one handler', () => {
+    for (const command of COMMANDS) {
+      for (const alias of command.aliases ?? []) {
+        assert.equal(resolveCommand(alias), command.name, alias);
+      }
+      assert.equal(resolveCommand(command.name), command.name);
+    }
+  });
+
+  it('gives an alias the same options as the command it stands for', () => {
+    const built = buildCommands().map((command) => command.toJSON());
+    for (const command of COMMANDS) {
+      const primary = built.find((entry) => entry.name === command.name)!;
+      for (const alias of command.aliases ?? []) {
+        const twin = built.find((entry) => entry.name === alias)!;
+        assert.deepEqual(twin.options, primary.options, alias);
+        assert.equal(twin.default_member_permissions, primary.default_member_permissions, alias);
+      }
+    }
+  });
+
+  it('knows nothing about names it was never given', () => {
+    for (const unknown of ['', 'ALLIES ', 'activityy', 'purgeall', 'camelot']) {
+      assert.equal(resolveCommand(unknown), null, unknown);
+    }
+  });
+
+  it('offers a user option on the commands that can be aimed at someone', () => {
+    const byName = new Map(COMMANDS.map((command) => [command.name, command]));
+    assert.ok(byName.get('activity')?.userOption, 'activity takes a user');
+    assert.ok(byName.get('purge')?.userOption, 'purge takes a user');
+    // A user option on /settings or /help would mean nothing.
+    assert.ok(!byName.get('settings')?.userOption);
+    assert.ok(!byName.get('help')?.userOption);
+  });
+
+  it('keeps every user option optional, so the bare command still works', () => {
+    for (const command of buildCommands().map((entry) => entry.toJSON())) {
+      for (const option of command.options ?? []) {
+        assert.equal((option as { required?: boolean }).required ?? false, false, command.name);
+      }
+    }
+  });
+
   it('matches the four commands that were asked for', () => {
     assert.deepEqual(COMMANDS.map((command) => command.name).sort(), ['activity', 'help', 'purge', 'settings']);
+  });
+
+  it('keeps /allies as the short way to say /activity', () => {
+    assert.deepEqual(COMMANDS.find((command) => command.name === 'activity')?.aliases, ['allies']);
   });
 
   it('has no leftover game panel command', () => {

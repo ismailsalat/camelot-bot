@@ -11,7 +11,6 @@ import {
   TextDisplayBuilder,
   ThumbnailBuilder,
   type Client,
-  type InteractionReplyOptions,
 } from 'discord.js';
 import { type EmojiSlot, type GuildSettings } from '../db/settings.js';
 import { componentEmojiFor, emojiFor } from '../util/emoji.js';
@@ -172,20 +171,13 @@ export function trendLabel(direction: TrendDirection): string {
 
 /* --------------------------------- replies --------------------------------- */
 
-export interface Screen {
-  container: ContainerBuilder;
-}
-
-/** Everything a V2 interaction reply needs. Never mixes content with V2. */
-export function v2Reply(
-  built: ContainerBuilder,
-  options?: { ephemeral?: boolean },
-): InteractionReplyOptions {
-  return {
-    components: [built],
-    flags: options?.ephemeral === false ? V2_PUBLIC : V2_FLAGS,
-  } as InteractionReplyOptions;
-}
+/*
+ * There is deliberately no generic "build a reply" helper here. Cards carry
+ * mentions so a profile is one tap away, which means every payload has to
+ * suppress them at send time — and a helper that forgot would be a silent
+ * mass-ping waiting to happen. The router builds payloads itself, and a test
+ * asserts no payload in the codebase omits allowedMentions.
+ */
 
 /** A one-line result, in the house style. */
 export function notice(message: string, accent = ACCENT_MUTED): ContainerBuilder {

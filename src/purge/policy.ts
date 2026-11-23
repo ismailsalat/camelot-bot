@@ -57,6 +57,17 @@ export function isProtected(protection: Protection): boolean {
   return protection.kind !== 'none';
 }
 
+/**
+ * A wall is a protection the person asking cannot move: the server owner, and
+ * an absolute role for anyone but the owner who locked it. Everything else is
+ * a caution — the server's own soft setting, which its author may override.
+ */
+export function isWall(protection: Protection, tier: 'member' | 'admin' | 'owner'): boolean {
+  if (protection.kind === 'owner') return true;
+  if (protection.kind === 'absolute') return tier !== 'owner';
+  return false;
+}
+
 export function describeProtection(protection: Protection): string | null {
   switch (protection.kind) {
     case 'owner':
@@ -97,6 +108,7 @@ export function selectCandidates(
   scope: Scope,
   settings: GuildSettings,
   now = Date.now(),
+  tier: 'member' | 'admin' | 'owner' = 'admin',
 ): Candidate[] {
   const graceMs = settings.activity.gracePeriodDays * 86_400_000;
 
@@ -104,6 +116,7 @@ export function selectCandidates(
     .filter((input) => !input.facts.isBot)
     .map((input) => {
       const protectedMember = isProtected(input.protection);
+      const walled = isWall(input.protection, tier);
       const newcomer = input.facts.joinedAt !== null && now - input.facts.joinedAt < graceMs;
       const enoughHistory = input.summary.observedDays >= settings.purge.minObservedDays;
       const quietLongEnough =
@@ -119,12 +132,17 @@ export function selectCandidates(
             : `Quiet for ${input.summary.daysSinceActive} days`;
       }
 
-      return { input, protectedMember, newcomer, enoughHistory, inactive, reason };
+      return { input, protectedMember, walled, newcomer, enoughHistory, inactive, reason };
     });
 
   const chosen = decorated.filter((entry) => {
     if (scope === 'all') return true;
-    if (scope === 'eligible') return !entry.protectedMember;
+    // "Everyone I can remove" means exactly that, so it now includes members
+    // behind a soft protection the viewer is allowed to override.
+    if (scope === 'eligible') return !entry.walled;
+    // The automatic inactive filter stays conservative: a protected role or an
+    // away mark keeps you out of it, which is the point of setting one. Those
+    // members are still reachable through Everyone, or by naming them.
     return entry.inactive && !entry.protectedMember;
   });
 
@@ -132,7 +150,7 @@ export function selectCandidates(
     .map(
       (entry): Candidate => ({
         ...entry.input,
-        reviewable: !entry.protectedMember,
+        reviewable: !entry.walled,
         reason: entry.reason,
       }),
     )

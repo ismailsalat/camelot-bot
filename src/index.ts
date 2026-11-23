@@ -12,6 +12,9 @@ import { openDatabase } from './db/index.js';
 import { getSettings, setByPath } from './db/settings.js';
 import { clips } from './db/repos.js';
 import { routeInteraction } from './core/router.js';
+import { setHostPrefix } from './core/prefix.js';
+import { publishCommands } from './core/publish.js';
+import { handleTextCommand, looksLikeTextCommand } from './core/textCommands.js';
 import { isModuleEnabled } from './core/registry.js';
 import { onJoinGuild } from './core/adopt.js';
 import { handleClipsMessage, handleClipsUpdate } from './features/mediaGuard.js';
@@ -34,6 +37,7 @@ function boot() {
 const env = boot();
 setLogLevel(env.logLevel);
 openDatabase(env.databasePath);
+setHostPrefix(env.commandPrefix);
 
 const client = new Client({
   intents: [
@@ -57,6 +61,7 @@ registerUpkeepJobs();
 
 client.once(Events.ClientReady, async (ready) => {
   log.info(`Logged in as ${ready.user.tag} in ${ready.guilds.cache.size} server(s).`);
+  log.info(`Text commands use "${env.commandPrefix}" unless a server sets its own.`);
 
   for (const guild of ready.guilds.cache.values()) {
     await warmMemberCache(guild);
@@ -68,6 +73,14 @@ client.once(Events.ClientReady, async (ready) => {
   reconcileOnReady(ready);
   startCoverage(ready);
   startScheduler(client);
+
+  // Keeps Discord's command list in step with the code without a separate
+  // deploy step. Does nothing when nothing has changed.
+  await publishCommands({
+    clientId: env.clientId,
+    token: env.token,
+    devGuildId: env.devGuildId,
+  });
 });
 
 client.on(Events.GuildCreate, (guild: Guild) => {
@@ -84,12 +97,24 @@ client.on(Events.InteractionCreate, (interaction) => {
 
 client.on(Events.MessageCreate, (message: Message) => {
   if (!message.inGuild()) return;
+
+  // A text command is an instruction, not conversation: it gets answered, and
+  // it does not earn activity. Otherwise `!allies` would be a way to farm the
+  // very number it reports.
+  const isCommand = looksLikeTextCommand(message);
+  if (isCommand) {
+    void handleTextCommand(message).catch((error) => log.error('Text command failed', error));
+  }
+
   // Clips and Activity both read the same event; each checks its own module.
   void handleClipsMessage(message).catch((error) => log.error('Clips handler failed', error));
-  try {
-    trackMessage(message);
-  } catch (error) {
-    log.error('Activity message tracking failed', error);
+
+  if (!isCommand) {
+    try {
+      trackMessage(message);
+    } catch (error) {
+      log.error('Activity message tracking failed', error);
+    }
   }
 });
 

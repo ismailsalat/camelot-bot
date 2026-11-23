@@ -11,12 +11,15 @@ import { getSettings, setByPath, type EmojiSlot } from '../db/settings.js';
 import { EMOJI_SLOTS } from '../db/settings.js';
 import { Ids, parseId } from './ids.js';
 import { canBotKick, canEditGroup, isAdmin, isOwner, tierOf } from './permissions.js';
+import { runCommand, type CommandResult } from './dispatch.js';
+import { commandByName, resolveCommand } from './registry.js';
 import { isModuleEnabled } from './registry.js';
-import { container, divider, errorNotice, heading, notice, text, V2_FLAGS } from './ui.js';
+import { container, divider, errorNotice, heading, notice, text, V2_FLAGS, V2_PUBLIC } from './ui.js';
 import { renderHelpCategory, renderHelpHome } from './help.js';
 import {
   buildEmojiModal,
   buildNumberModal,
+  buildPrefixModal,
   numberFieldByPath,
   renderGroup,
   renderHome as renderSettingsHome,
@@ -34,6 +37,7 @@ import { exemptions, protectionFor, type MemberFacts, type Scope } from '../purg
 import { reviews, type Decision } from '../purge/session.js';
 import { executeKicks, revalidate } from '../purge/execute.js';
 import { NO_MENTIONS } from '../util/mentions.js';
+import { isValidPrefix } from '../env.js';
 import { isSoftError, soft } from '../util/discord.js';
 import { log } from '../logger.js';
 
@@ -72,84 +76,88 @@ async function replySafely(interaction: Interaction, message: string): Promise<v
   }
 }
 
-/** Every V2 screen is sent the same way, so nothing ever mixes content with V2. */
+/**
+ * Every V2 screen is sent the same way, so nothing ever mixes content with V2
+ * and nothing ever pings. Cards carry mentions so a profile is one tap away —
+ * suppressing them here is what keeps that from becoming a notification.
+ */
 async function show(interaction: Any, built: unknown, mode: 'update' | 'reply' = 'update'): Promise<void> {
-  const payload = { components: [built], flags: V2_FLAGS } as never;
+  // A new reply asks to be ephemeral. An update must not: a card opened by a
+  // text command is an ordinary channel message, and only IsComponentsV2 can
+  // be changed on a message that already exists.
+  const fresh = { components: [built], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never;
+  const edit = { components: [built], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never;
+
   if (mode === 'reply' || (!interaction.isModalSubmit() && !('update' in interaction))) {
-    await interaction.reply(payload);
+    await interaction.reply(fresh);
     return;
   }
   if (interaction.isModalSubmit()) {
-    if (interaction.isFromMessage()) await interaction.update(payload);
-    else await interaction.reply(payload);
+    if (interaction.isFromMessage()) await interaction.update(edit);
+    else await interaction.reply(fresh);
     return;
   }
-  await interaction.update(payload);
+  await interaction.update(edit);
+}
+
+/**
+ * A refusal always replies; it never updates. A text command's card is a
+ * public message, so updating it would wipe the panel for everyone looking at
+ * it because one person pressed a button they weren't allowed to.
+ */
+async function denied(interaction: Any, message: string): Promise<void> {
+  const payload = {
+    components: [errorNotice(message)],
+    flags: V2_FLAGS,
+    allowedMentions: NO_MENTIONS,
+  } as never;
+  if (interaction.replied || interaction.deferred) await interaction.followUp(payload);
+  else await interaction.reply(payload);
 }
 
 /* -------------------------------- commands --------------------------------- */
+
+/** Renders whatever a command decided to show. Used by both ways of asking. */
+export function payloadFor(result: CommandResult): Record<string, unknown> {
+  const body =
+    result.kind === 'card'
+      ? result.body
+      : result.kind === 'error'
+        ? errorNotice(result.message)
+        : notice(result.message);
+  return { components: [body], flags: V2_FLAGS, allowedMentions: NO_MENTIONS };
+}
 
 async function onCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!interaction.inCachedGuild()) {
     await interaction.reply({ content: 'Use this in the server.', flags: MessageFlags.Ephemeral });
     return;
   }
-  const member = interaction.member;
-  const settings = getSettings(interaction.guildId);
 
-  switch (interaction.commandName) {
-    case 'help':
-      await interaction.reply({ components: [renderHelpHome(member, interaction.client)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
-      return;
-
-    case 'settings': {
-      if (!isAdmin(member)) {
-        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
-        return;
-      }
-      await interaction.reply({ components: [renderSettingsHome(member)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
-      return;
-    }
-
-    case 'activity': {
-      if (!isModuleEnabled(settings, 'activity')) {
-        await interaction.reply({ components: [notice('Activity is turned off.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
-        return;
-      }
-      await interaction.reply({
-        components: [activityUi.renderMemberCard(member, member, interaction.client)],
-        flags: V2_FLAGS,
-        allowedMentions: NO_MENTIONS,
-      } as never);
-      return;
-    }
-
-    case 'purge': {
-      if (!isModuleEnabled(settings, 'purge')) {
-        await interaction.reply({
-          components: [notice('The Purge needs Activity turned on.')],
-          flags: V2_FLAGS,
-          allowedMentions: NO_MENTIONS,
-        } as never);
-        return;
-      }
-      if (!isAdmin(member)) {
-        await interaction.reply({ components: [errorNotice('Admins only.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
-        return;
-      }
-      await interaction.reply({
-        components: [
-          purgeUi.renderStart(interaction.guild, purgeUi.scopeCounts(interaction.guild), interaction.client),
-        ],
-        flags: V2_FLAGS,
-        allowedMentions: NO_MENTIONS,
-      } as never);
-      return;
-    }
-
-    default:
-      await interaction.reply({ components: [errorNotice('I do not know that one.')], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
+  // An alias is a separate command as far as Discord is concerned; here it
+  // becomes the one name the handlers know.
+  const name = resolveCommand(interaction.commandName);
+  if (!name) {
+    await interaction.reply(payloadFor({ kind: 'error', message: 'I do not know that one.' }) as never);
+    return;
   }
+
+  const spec = commandByName(name);
+  const target = spec?.userOption
+    ? (interaction.options.getMember(spec.userOption.name) ?? null)
+    : null;
+
+  // Replied directly rather than deferred: Components V2 has to be set when
+  // the message is created, and `deferReply` only accepts Ephemeral — so a
+  // deferred placeholder could not become a V2 card afterwards.
+  const result = await runCommand({
+    name,
+    member: interaction.member,
+    guild: interaction.guild,
+    client: interaction.client,
+    target,
+  });
+  await interaction.reply(payloadFor(result) as never);
 }
 
 /* ------------------------------- components -------------------------------- */
@@ -190,7 +198,7 @@ async function onSettings(
   args: string[],
   member: GuildMember,
 ): Promise<void> {
-  if (!isAdmin(member)) return await show(interaction, errorNotice('Admins only.'));
+  if (!isAdmin(member)) return await denied(interaction, 'Admins only.');
   const guildId = member.guild.id;
 
   switch (action) {
@@ -199,7 +207,7 @@ async function onSettings(
 
     case 's.g': {
       const group = args[0] as Group;
-      if (!guardGroup(member, group)) return await show(interaction, errorNotice('That one is owner only.'));
+      if (!guardGroup(member, group)) return await denied(interaction, 'That one is owner only.');
       return await show(interaction, renderGroup(member, group, interaction.client));
     }
 
@@ -209,26 +217,26 @@ async function onSettings(
 
       if (kind === 'home') {
         const group = interaction.values[0] as Group;
-        if (!guardGroup(member, group)) return await show(interaction, errorNotice('That one is owner only.'));
+        if (!guardGroup(member, group)) return await denied(interaction, 'That one is owner only.');
         return await show(interaction, renderGroup(member, group, interaction.client));
       }
 
       if (kind === 'activity') {
         const field = numberFieldByPath(interaction.values[0]!);
         if (!field) return;
-        if (!guardGroup(member, 'activity')) return await show(interaction, errorNotice('Not allowed.'));
+        if (!guardGroup(member, 'activity')) return await denied(interaction, 'Not allowed.');
         return await interaction.showModal(buildNumberModal(field, getSettings(guildId)));
       }
 
       if (kind === 'emoji') {
         const slot = interaction.values[0]!;
         if (!EMOJI_SLOTS.includes(slot as EmojiSlot)) return;
-        if (!guardGroup(member, 'emojis')) return await show(interaction, errorNotice('Not allowed.'));
+        if (!guardGroup(member, 'emojis')) return await denied(interaction, 'Not allowed.');
         return await interaction.showModal(buildEmojiModal(slot as EmojiSlot, getSettings(guildId)));
       }
 
       if (kind === 'delegate') {
-        if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+        if (!isOwner(member)) return await denied(interaction, 'Owner only.');
         const chosen = interaction.values.filter((value) =>
           (DELEGATABLE_GROUPS as readonly string[]).includes(value),
         );
@@ -240,16 +248,29 @@ async function onSettings(
 
     case 's.t': {
       const path = args[0]!;
-      const group = path.startsWith('activity') ? 'activity' : 'clips';
-      if (!guardGroup(member, group)) return await show(interaction, errorNotice('Not allowed.'));
+      const group: Group = path.startsWith('core')
+        ? 'modules'
+        : path.startsWith('activity')
+          ? 'activity'
+          : 'clips';
+      // The modules screen is owner-only, and so is anything shown on it.
+      if (group === 'modules' ? !isOwner(member) : !guardGroup(member, group)) {
+        return await denied(interaction, group === 'modules' ? 'Owner only.' : 'Not allowed.');
+      }
       const settings = getSettings(guildId);
       const current = !!getByPathLocal(settings, path);
       setByPath(guildId, path, !current);
-      return await show(interaction, renderGroup(member, group as Group, interaction.client));
+      return await show(interaction, renderGroup(member, group, interaction.client));
+    }
+
+    case 's.x': {
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
+      if (args[0] !== 'core.prefix') return;
+      return await interaction.showModal(buildPrefixModal(getSettings(guildId), guildId));
     }
 
     case 's.mode': {
-      if (!guardGroup(member, 'channels')) return await show(interaction, errorNotice('Not allowed.'));
+      if (!guardGroup(member, 'channels')) return await denied(interaction, 'Not allowed.');
       const path = args[0]!;
       const current = getByPathLocal(getSettings(guildId), path);
       setByPath(guildId, path, current === 'all' ? 'only' : 'all');
@@ -257,7 +278,7 @@ async function onSettings(
     }
 
     case 's.m': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       const key = args[0] as 'clips' | 'activity' | 'purge';
       const settings = getSettings(guildId);
       setByPath(guildId, `modules.${key}`, !settings.modules[key]);
@@ -268,7 +289,7 @@ async function onSettings(
       if (!interaction.isChannelSelectMenu()) return;
       const path = args[0]!;
       const group = path.startsWith('activity') ? 'channels' : 'channels';
-      if (!guardGroup(member, group)) return await show(interaction, errorNotice('Not allowed.'));
+      if (!guardGroup(member, group)) return await denied(interaction, 'Not allowed.');
       const single = path === 'channels.clips' || path === 'channels.highlights';
       setByPath(guildId, path, single ? (interaction.values[0] ?? null) : [...interaction.values]);
       forgetGeneralChannel(guildId);
@@ -277,18 +298,18 @@ async function onSettings(
 
     case 's.r': {
       if (!interaction.isRoleSelectMenu()) return;
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       setByPath(guildId, args[0]!, [...interaction.values]);
       return await show(interaction, renderGroup(member, 'permissions', interaction.client));
     }
 
     case 's.wipe': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       return await show(interaction, wipeConfirm());
     }
 
     case 's.wipe2': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       store.wipe(guildId);
       return await show(
         interaction,
@@ -326,13 +347,13 @@ async function onActivity(
       // Refresh whichever card you were looking at.
       const target = args[0] === member.id ? member : await soft('fetch member', () => guild.members.fetch(args[0]!));
       if (!target) return await show(interaction, notice('They are not in the server.'));
-      if (target.id !== member.id && !isAdmin(member)) return await show(interaction, errorNotice('Admins only.'));
+      if (target.id !== member.id && !isAdmin(member)) return await denied(interaction, 'Admins only.');
       return await show(interaction, activityUi.renderMemberCard(target, member, interaction.client));
     }
 
     case 'a.pick': {
       if (!interaction.isUserSelectMenu()) return;
-      if (!isAdmin(member)) return await show(interaction, errorNotice('Admins only.'));
+      if (!isAdmin(member)) return await denied(interaction, 'Admins only.');
       const target = await soft('fetch member', () => guild.members.fetch(interaction.values[0]!));
       if (!target) return await show(interaction, notice('They are not in the server.'));
       return await show(interaction, activityUi.renderMemberCard(target, member, interaction.client));
@@ -342,7 +363,7 @@ async function onActivity(
       const target = await soft('fetch member', () => guild.members.fetch(args[0]!));
       if (!target) return await show(interaction, notice('They are not in the server.'));
       if (target.id !== member.id && !isAdmin(member)) {
-        return await show(interaction, errorNotice('Admins only.'));
+        return await denied(interaction, 'Admins only.');
       }
       return await show(interaction, activityUi.renderMemberCard(target, member, interaction.client));
     }
@@ -351,19 +372,19 @@ async function onActivity(
       // Fetching members can take a beat, so acknowledge first.
       await interaction.deferUpdate();
       const board = await activityUi.renderBoard(guild, Number(args[0] ?? 0), member, interaction.client);
-      await interaction.editReply({ components: [board], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
+      await interaction.editReply({ components: [board], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never);
       return;
     }
 
     case 'a.away': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       const target = await soft('fetch member', () => guild.members.fetch(args[0]!));
       if (!target) return await show(interaction, notice('They are not in the server.'));
       return await show(interaction, activityUi.renderAwayPicker(target, interaction.client));
     }
 
     case 'a.away2': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       const userId = args[0]!;
       const days = Number(args[1] ?? 7);
       exemptions.set(guild.id, userId, Date.now() + days * 86_400_000, null, member.id);
@@ -373,7 +394,7 @@ async function onActivity(
     }
 
     case 'a.away0': {
-      if (!isOwner(member)) return await show(interaction, errorNotice('Owner only.'));
+      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       exemptions.clear(guild.id, args[0]!);
       const target = await soft('fetch member', () => guild.members.fetch(args[0]!));
       if (!target) return await show(interaction, notice(SAVED));
@@ -399,7 +420,7 @@ async function showCard(
   const settings = getSettings(guild.id);
 
   if (session.cursor >= session.candidates.length) {
-    return await show(interaction, purgeUi.renderSummary(session, guild));
+    return await show(interaction, purgeUi.renderSummary(session));
   }
 
   const userId = session.candidates[session.cursor]!;
@@ -433,6 +454,7 @@ async function showCard(
         total: session.candidates.length,
         decided: decisions.get(userId) ?? null,
         blocked: kickable.ok ? null : kickable.reason,
+        actorTier: tierOf(member),
       },
       interaction.client,
     ),
@@ -446,16 +468,16 @@ async function onPurge(
   member: GuildMember,
 ): Promise<void> {
   const guild = member.guild;
-  if (!isAdmin(member)) return await show(interaction, errorNotice('Admins only.'));
+  if (!isAdmin(member)) return await denied(interaction, 'Admins only.');
 
   switch (action) {
     case 'p.go1': {
       const scope = args[0] as Scope;
       await interaction.deferUpdate();
 
-      const candidates = purgeUi.gatherCandidates(guild, scope);
+      const candidates = purgeUi.gatherCandidates(guild, scope, Date.now(), tierOf(member));
       if (candidates.length === 0) {
-        await interaction.editReply({ components: [purgeUi.renderEmpty(scope)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
+        await interaction.editReply({ components: [purgeUi.renderEmpty(scope)], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never);
         return;
       }
 
@@ -474,7 +496,7 @@ async function onPurge(
       if (!existing) {
         return await show(
           interaction,
-          purgeUi.renderStart(guild, purgeUi.scopeCounts(guild), interaction.client),
+          purgeUi.renderStart(guild, purgeUi.scopeCounts(guild, Date.now(), tierOf(member)), interaction.client),
         );
       }
       reviews.setCursor(existing.id, 0);
@@ -484,7 +506,7 @@ async function onPurge(
     case 'p.d': {
       const session = reviews.findFor(guild.id, member.id);
       if (!session) return await show(interaction, notice('That review is over.'));
-      if (session.actorId !== member.id) return await show(interaction, errorNotice('That is someone else’s review.'));
+      if (session.actorId !== member.id) return await denied(interaction, 'That is someone else’s review.');
 
       const userId = session.candidates[session.cursor];
       const decision = args[0] as Decision;
@@ -503,7 +525,7 @@ async function onPurge(
     case 'p.fin': {
       const session = reviews.findFor(guild.id, member.id);
       if (!session) return await show(interaction, notice('That review is over.'));
-      return await show(interaction, purgeUi.renderSummary(session, guild));
+      return await show(interaction, purgeUi.renderSummary(session));
     }
 
     case 'p.ok': {
@@ -514,7 +536,7 @@ async function onPurge(
       const verdicts = await revalidate(guild, queued, member.id, { decidedAt: session.updatedAt });
       await interaction.editReply({
         components: [purgeUi.renderConfirm(verdicts)],
-        flags: V2_FLAGS,
+        flags: V2_PUBLIC,
         allowedMentions: NO_MENTIONS,
       } as never);
       return;
@@ -524,23 +546,95 @@ async function onPurge(
       const session = reviews.findFor(guild.id, member.id);
       if (!session) return await show(interaction, notice('That review is over.'));
 
+      const includeWarned = args[0] === 'all';
       const queued = reviews.queued(session.id);
 
       // Decide on the queued count, before any awaits: a modal has to be the
       // first response to the interaction, inside Discord's three seconds.
       if (queued.length >= 5) {
-        return await interaction.showModal(purgeUi.buildBatchModal(queued.length));
+        return await interaction.showModal(
+          purgeUi.buildBatchModal(queued.length, includeWarned ? 'all' : 'safe'),
+        );
       }
 
       await interaction.deferUpdate();
       const verdicts = await revalidate(guild, queued, member.id, { decidedAt: session.updatedAt });
-      const outcomes = await executeKicks(guild, verdicts, member.id, 'Camelot review');
+      const outcomes = await executeKicks(guild, verdicts, member.id, 'Camelot review', { includeWarned });
       reviews.finish(session.id);
       await interaction.editReply({
         components: [purgeUi.renderOutcome(outcomes)],
-        flags: V2_FLAGS,
+        flags: V2_PUBLIC,
         allowedMentions: NO_MENTIONS,
       } as never);
+      return;
+    }
+
+    case 'p.ovr': {
+      // The override's own confirmation. Re-checked here rather than trusting
+      // the previous screen, because the answer can change between clicks.
+      const session = reviews.findFor(guild.id, member.id);
+      if (!session) return await show(interaction, notice('That review is over.'));
+      await interaction.deferUpdate();
+      const verdicts = await revalidate(guild, reviews.queued(session.id), member.id, {
+        decidedAt: session.updatedAt,
+      });
+      await interaction.editReply({
+        components: [purgeUi.renderOverrideConfirm(verdicts)],
+        flags: V2_PUBLIC,
+        allowedMentions: NO_MENTIONS,
+      } as never);
+      return;
+    }
+
+    /* --- one named member, from `/purge @user` or `!purge @user` --- */
+
+    case 'p.1':
+    case 'p.1a': {
+      const [userId, actorId] = args;
+      if (!userId || actorId !== member.id) {
+        return await denied(interaction, 'That panel belongs to whoever opened it.');
+      }
+      const target = await soft('fetch member', () => guild.members.fetch(userId));
+      if (!target) return await show(interaction, notice('They are not in the server.'));
+
+      const verdicts = await revalidate(guild, [userId], member.id, {});
+      const verdict = verdicts[0];
+      if (!verdict) return await show(interaction, notice('Could not check that member.'));
+
+      if (action === 'p.1a' && verdict.severity !== 'block') {
+        return await show(interaction, purgeUi.renderOneConfirm(target, verdict, member.id, interaction.client));
+      }
+      return await show(
+        interaction,
+        purgeUi.renderOneCard(
+          target,
+          summarise(guild.id, userId, getSettings(guild.id)),
+          verdict,
+          member.id,
+          interaction.client,
+        ),
+      );
+    }
+
+    case 'p.1g': {
+      const [userId, actorId] = args;
+      if (!userId || actorId !== member.id) {
+        return await denied(interaction, 'That panel belongs to whoever opened it.');
+      }
+      await interaction.deferUpdate();
+
+      const verdicts = await revalidate(guild, [userId], member.id, {});
+      // Confirmed twice by an admin who saw the caution, so warnings count as
+      // overridden. A hard block is still never overridable.
+      const outcomes = await executeKicks(guild, verdicts, member.id, 'Camelot — removed by admin', {
+        includeWarned: true,
+      });
+
+      const body =
+        outcomes.length > 0
+          ? purgeUi.renderOutcome(outcomes)
+          : notice(verdicts[0]?.detail ?? 'Nothing changed. Nobody was removed.');
+      await interaction.editReply({ components: [body], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never);
       return;
     }
 
@@ -553,7 +647,7 @@ async function onPurge(
     case 'p.list': {
       const session = reviews.findFor(guild.id, member.id);
       if (!session) return await show(interaction, notice('That review is over.'));
-      return await show(interaction, purgeUi.renderSummary(session, guild));
+      return await show(interaction, purgeUi.renderSummary(session));
     }
   }
   void args;
@@ -571,7 +665,7 @@ async function showCardDeferred(
   const settings = getSettings(guild.id);
   const userId = session.candidates[session.cursor];
   if (!userId) {
-    await interaction.editReply({ components: [purgeUi.renderSummary(session, guild)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
+    await interaction.editReply({ components: [purgeUi.renderSummary(session)], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never);
     return;
   }
   const target = await soft('fetch member', () => guild.members.fetch(userId));
@@ -598,11 +692,12 @@ async function showCardDeferred(
           total: session.candidates.length,
           decided: null,
           blocked: kickable.ok ? null : kickable.reason,
+          actorTier: tierOf(member),
         },
         interaction.client,
       ),
     ],
-    flags: V2_FLAGS,
+    flags: V2_PUBLIC,
     allowedMentions: NO_MENTIONS,
   } as never);
 }
@@ -639,11 +734,36 @@ async function onModal(interaction: ModalSubmitInteraction): Promise<void> {
     return await show(interaction, renderGroup(member, 'emojis', interaction.client));
   }
 
+  if (action === 's.x') {
+    if (!isOwner(member)) return await denied(interaction, 'Owner only.');
+    if (args[0] !== 'core.prefix') return;
+
+    const raw = interaction.fields.getTextInputValue(Ids.settingsInput).trim();
+    // Blank hands the server back to whatever the host set, which is the only
+    // way to undo a custom prefix without guessing what the default was.
+    if (raw === '') {
+      setByPath(member.guild.id, 'core.prefix', null);
+      return await show(interaction, renderGroup(member, 'modules', interaction.client));
+    }
+    if (!isValidPrefix(raw)) {
+      return await show(
+        interaction,
+        errorNotice(
+          'That prefix will not work. Use 1-3 symbols such as `!`, `?` or `$` — ' +
+            'not letters, and not `/`, `@`, `#` or `<`, which Discord treats specially.',
+        ),
+      );
+    }
+    setByPath(member.guild.id, 'core.prefix', raw);
+    return await show(interaction, renderGroup(member, 'modules', interaction.client));
+  }
+
   if (action === 'p.go') {
     if (!isAdmin(member)) return;
     const session = reviews.findFor(member.guild.id, member.id);
     if (!session) return await show(interaction, notice('That review is over.'));
 
+    const includeWarned = args[0] === 'all';
     const typed = interaction.fields.getTextInputValue(Ids.purgeConfirmInput).trim();
     const queued = reviews.queued(session.id);
 
@@ -653,9 +773,11 @@ async function onModal(interaction: ModalSubmitInteraction): Promise<void> {
 
     await interaction.deferUpdate();
     const verdicts = await revalidate(member.guild, queued, member.id, { decidedAt: session.updatedAt });
-    const outcomes = await executeKicks(member.guild, verdicts, member.id, 'Camelot review');
+    const outcomes = await executeKicks(member.guild, verdicts, member.id, 'Camelot review', {
+      includeWarned,
+    });
     reviews.finish(session.id);
-    await interaction.editReply({ components: [purgeUi.renderOutcome(outcomes)], flags: V2_FLAGS, allowedMentions: NO_MENTIONS } as never);
+    await interaction.editReply({ components: [purgeUi.renderOutcome(outcomes)], flags: V2_PUBLIC, allowedMentions: NO_MENTIONS } as never);
   }
 }
 

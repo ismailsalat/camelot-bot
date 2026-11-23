@@ -12,12 +12,15 @@ import { tierOf } from './permissions.js';
 import {
   COMMANDS,
   MODULES,
+  allCommandNames,
+  commandLabel,
   commandsFor,
   isModuleEnabled,
   moduleByKey,
   tierAllows,
   type ModuleKey,
 } from './registry.js';
+import { prefixFor, textCommandsEnabled } from './prefix.js';
 import { emojiFor } from '../util/emoji.js';
 
 /**
@@ -38,14 +41,14 @@ export function renderHelpHome(member: GuildMember, client?: Client) {
 
   for (const module of modules) {
     const commands = commandsFor(module.key).filter((command) => tierAllows(tier, command.tier));
-    const line = commands.length > 0 ? commands.map((command) => `\`/${command.name}\``).join(' ') : '_Automatic_';
+    const line = commands.length > 0 ? commands.map((command) => commandLabel(command)).join('  ') : '_Automatic_';
     body.addTextDisplayComponents(text(`**${module.name}**\n${module.blurb}\n${line}`));
   }
 
   const core = commandsFor('core').filter((command) => tierAllows(tier, command.tier));
   if (core.length > 0) {
     body.addTextDisplayComponents(
-      text(`**Settings**\nChange how Camelot works.\n${core.map((c) => `\`/${c.name}\``).join(' ')}`),
+      text(`**Settings**\nChange how Camelot works.\n${core.map((command) => commandLabel(command)).join('  ')}`),
     );
   }
 
@@ -57,6 +60,15 @@ export function renderHelpHome(member: GuildMember, client?: Client) {
         .setValue(module.key)
         .setDescription(module.blurb.slice(0, 100)),
     );
+
+  if (textCommandsEnabled(member.guild.id)) {
+    const prefix = prefixFor(member.guild.id);
+    body
+      .addSeparatorComponents(divider())
+      .addTextDisplayComponents(
+        text(`Typing is faster: \`${prefix}allies\` works the same as \`/activity\`, and takes an @mention too.`),
+      );
+  }
 
   if (options.length > 0) {
     body
@@ -87,9 +99,24 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
   if (commands.length === 0) {
     body.addTextDisplayComponents(text('Runs on its own — no commands needed.'));
   } else {
+    const prefix = prefixFor(member.guild.id);
+    const textOn = textCommandsEnabled(member.guild.id);
     for (const command of commands) {
       const suffix = command.tier === 'member' ? '' : command.tier === 'owner' ? ' · owner only' : ' · admin only';
-      body.addTextDisplayComponents(text(`\`/${command.name}\`${suffix}\n${command.description}`));
+      const lines = [`${commandLabel(command)}${suffix}`, command.description];
+      if (textOn && !command.slashOnly) {
+        lines.push(
+          command.textNeedsTarget
+            ? `_Or_ \`${prefix}${command.name} @someone\``
+            : `_Or_ ${commandLabel(command, prefix)}`,
+        );
+      }
+      // Skipped when the text form above already shows the @mention, to avoid
+      // saying the same thing twice in four lines.
+      if (command.userOption && !(textOn && command.textNeedsTarget)) {
+        lines.push(`_Add an @mention to aim it at someone: \`/${command.name} @someone\`_`);
+      }
+      body.addTextDisplayComponents(text(lines.join('\n')));
     }
   }
 
@@ -120,5 +147,7 @@ export function groupLabel(group: string): string {
 
 /** Used by the register script so Discord's list matches the registry exactly. */
 export function knownCommandNames(): string[] {
-  return COMMANDS.map((command) => command.name);
+  return allCommandNames();
 }
+
+void COMMANDS;

@@ -21,6 +21,24 @@ export interface CommandSpec {
   defaultPermission?: bigint;
   /** Where to go in Settings for related options. */
   settingsGroup?: string;
+  /**
+   * Extra names for the same command. Each is registered as its own slash
+   * command and accepted as its own prefix command, and all of them route to
+   * `name`, so there is still exactly one handler.
+   */
+  aliases?: string[];
+  /** When set, the command takes an optional member to act on. */
+  userOption?: { name: string; description: string };
+  /**
+   * Slash only. A text command answers with a visible message in the channel,
+   * which is wrong for anything that shows the server's configuration.
+   */
+  slashOnly?: boolean;
+  /**
+   * As a text command, this one needs a member named. The long interactive
+   * version stays on the slash command, where the answer is private.
+   */
+  textNeedsTarget?: boolean;
 }
 
 export interface ModuleSpec {
@@ -106,6 +124,9 @@ export const COMMANDS: CommandSpec[] = [
     tier: 'admin',
     defaultPermission: PermissionFlagsBits.ManageGuild,
     settingsGroup: 'modules',
+    // Channel ids, role setup and the rest of the server's wiring. Not
+    // something to paste into whatever channel somebody happened to type in.
+    slashOnly: true,
   },
   {
     name: 'activity',
@@ -113,6 +134,8 @@ export const COMMANDS: CommandSpec[] = [
     module: 'activity',
     tier: 'member',
     settingsGroup: 'activity',
+    aliases: ['allies'],
+    userOption: { name: 'user', description: 'Whose activity to show. Leave empty for your own.' },
   },
   {
     name: 'purge',
@@ -121,8 +144,45 @@ export const COMMANDS: CommandSpec[] = [
     tier: 'admin',
     defaultPermission: PermissionFlagsBits.KickMembers,
     settingsGroup: 'activity',
+    userOption: { name: 'user', description: 'Skip the queue and review one person.' },
+    // `!purge @someone` is the shortcut worth having. A whole swipe review
+    // playing out in a public channel, scores and all, is not.
+    textNeedsTarget: true,
   },
 ];
+
+/** Every name Discord knows, primary and alias alike. */
+export function allCommandNames(): string[] {
+  return COMMANDS.flatMap((command) => [command.name, ...(command.aliases ?? [])]);
+}
+
+/**
+ * Alias to primary. Built once at module load, so routing is a lookup rather
+ * than a scan, and an alias can never drift from the command it stands for.
+ */
+const BY_NAME: Map<string, CommandSpec> = (() => {
+  const map = new Map<string, CommandSpec>();
+  for (const command of COMMANDS) {
+    map.set(command.name, command);
+    for (const alias of command.aliases ?? []) map.set(alias, command);
+  }
+  return map;
+})();
+
+export function commandByName(name: string): CommandSpec | null {
+  return BY_NAME.get(name.toLowerCase()) ?? null;
+}
+
+/** The canonical name for whatever the person typed. */
+export function resolveCommand(name: string): string | null {
+  return commandByName(name)?.name ?? null;
+}
+
+/** "/activity" plus "also /allies" — how Help names a command with aliases. */
+export function commandLabel(command: CommandSpec, prefix = '/'): string {
+  const names = [command.name, ...(command.aliases ?? [])];
+  return names.map((name) => `\`${prefix}${name}\``).join(' · ');
+}
 
 export function moduleByKey(key: ModuleKey): ModuleSpec {
   return MODULES.find((module) => module.key === key)!;

@@ -7,6 +7,7 @@ import { addVoteReactions } from './voting.js';
 import { botCan, soft } from '../util/discord.js';
 import { NO_MENTIONS, onlyUser } from '../util/mentions.js';
 import { isModuleEnabled } from '../core/registry.js';
+import { looksLikeTextCommand } from '../core/textCommands.js';
 import { log } from '../logger.js';
 
 export function rulesFrom(settings: GuildSettings): MediaRules {
@@ -43,6 +44,10 @@ export function toInspectInput(message: Message): InspectInput {
 function isExempt(message: Message, settings: GuildSettings): boolean {
   if (message.author.bot) return true;
   if (message.system) return true;
+  // A text command is an instruction to Camelot, not a failed clip post. The
+  // command handler cleans it up itself; deleting it here as "not media"
+  // would make `!allies` in the clips channel look broken.
+  if (message.inGuild() && looksLikeTextCommand(message)) return true;
   const member = message.member as GuildMember | null;
   if (!member) return false;
   if (settings.media.bypassRoles.some((roleId) => member.roles.cache.has(roleId))) return true;
