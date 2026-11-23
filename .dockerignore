@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.env
+.env.*
+!.env.example
+.git
+.github
+*.log
+*.sqlite*
+README.md
+DEPLOY.md
