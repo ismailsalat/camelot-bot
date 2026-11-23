@@ -7,6 +7,26 @@ no XP and nothing to grind.
 - **Activity** — who has actually been around, from counted messages and shared voice time. Counters only: no message text, no audio.
 - **The Purge** — review members one at a time, like swiping through profiles. Nobody is removed until you confirm.
 
+## Updating to a new version
+
+Delete `src` before extracting, every time:
+
+```
+rmdir /s /q src          # Windows
+rm -rf src               # macOS / Linux
+```
+
+Extracting a zip over a folder adds and overwrites files but never removes
+ones that have since been deleted. Leave the old `src` in place and files from
+a previous version sit beside the new ones — `npm run dev` still works, because
+it only loads what gets imported, but `npm run build` compiles everything it
+finds and fails on code that no longer belongs.
+
+Your `.env` and `data/` live outside `src`, so deleting it loses nothing.
+
+Run `npm run build` after any update. It is the fastest way to catch a stale
+file, and it is exactly what CI does.
+
 ## Quick start
 
 ```bash
