@@ -133,3 +133,10 @@ The 11 added tests cover actual text routing, module/voice restrictions, busy-se
 - **Fix.** (1) x264 now makes one slice per picture (`slices=1:sliced-threads=0`), so the player sends exactly one frame per picture. (2) `tv/runtime/nal_guard.py` sits in front of the encryption: nothing is encrypted while playback is stopping, slices under 6 bytes and frames over 16 NAL units are skipped, and an encryption exception skips that frame instead of killing the video thread. Skips are logged as `Video guard skipped unsafe data…`.
 - **After a crash.** The retry now reloads the title first (the restarted TV service has forgotten its search), which fixes `Choose an anime and episode from search results first` on the automatic reconnect.
 - **Railway settings.** Delete `STREAM_VIDEO_BITRATE` (the default is 6000k) and `STREAM_X264_PRESET` (default superfast; veryfast uses more CPU for little visible gain). Bad values are cleaned or ignored since v18.
+
+## v20 — faster start / episode switch, steadier video
+
+- **Picking an anime and switching episodes are much faster.** `startEpisode` no longer asks the TV service for the episode list again (that re-inspected every source, ~4 s); it plays the id it already has, and only reloads the list if the service restarted. While loading an anime, episode lookup and the "standby" Go Live window now happen at the same time.
+- **One Go Live restart instead of two when switching.** `/api/play` only shows the standby slate when nothing is live. If an episode is already streaming, it keeps playing while the next one is verified, then swaps once (saves ~8 s).
+- **Stutter:** x264 presets slower than `superfast` are ignored (a warning is logged). `veryfast` fell behind real time on Railway's shared CPUs (late frames, ffmpeg read stalls). Set `STREAM_ALLOW_SLOW_PRESET=1` to force one. Best fix: delete `STREAM_X264_PRESET` and `STREAM_VIDEO_BITRATE` in Railway.
+- **"Loading" after being away:** this is the Discord client re-subscribing to the stream when a tab/window is hidden. The stream sends a keyframe every second so it recovers quickly; Camelot cannot prevent the client's own pause.

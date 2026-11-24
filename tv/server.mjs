@@ -281,7 +281,9 @@ const server=http.createServer(async(req,res)=>{
        let queue=candidatePlan({provider,media,alt:true},original,found.candidates,lang);
        if(b.source&&b.source!=='auto'){if(!queue.some(q=>q.provider===b.source))throw new Error('Selected source does not match this title');queue.sort((a,z)=>Number(z.provider===b.source)-Number(a.provider===b.source));}
        if(!queue.length)throw new Error('Selected source does not match this title');
-       if(!checkOnly)await commands.request({op:'standby',channel});
+       // Only show the standby slate when nothing is live yet. While a stream is already up (switching episodes),
+       // keep it playing during verification and swap once: that avoids a second Go Live restart (~8 s).
+       if(!checkOnly&&!['standby','streaming','paused','starting','requested'].includes(worker.status))await commands.request({op:'standby',channel});
        log('info',`Testing ${queue.length} matching provider(s) for episode ${chosen.number}: ${queue.map(q=>q.provider).join(', ')}`);
        const result=await tryPlayableEpisode({
          queue,episode:chosen,language:lang,

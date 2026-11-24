@@ -177,10 +177,12 @@ export class Streaming {
   private async loadTitle(title:Title){
     const s=this.session!;s.phase='loading';s.note='Checking episodes and sources…';s.changed=Date.now();await this.paint();
     await this.bridge.start();
-    const data=await this.episodesFor(title);
+    // Log the streaming account in first (usually already warm), then look up episodes while the standby
+    // Go Live window opens, so the two waits overlap instead of adding up.
+    await this.prepare();
+    const [data]=await Promise.all([this.episodesFor(title),this.bridge.call('/api/standby',{channel:s.channel})]);
     s.title={...title,...data.selection,poster:title.poster||data.selection.poster};s.episodes=data.episodes;s.episode=0;
     s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
-    await this.prepare();await this.bridge.call('/api/standby',{channel:s.channel});
     s.source='auto';s.actualSource=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
   }
   private async play(position=0){await this.playback(()=>this.startEpisode(position))}
@@ -189,12 +191,9 @@ export class Streaming {
     if(!s.title||!ep)throw new Error('Choose an anime first.');
     s.phase='loading';s.note='Finding a working source…';s.position=position;s.changed=Date.now();await this.paint();
     await this.prepare();
-    // Reuse cached title mappings; rebuild only after the TV service restarts.
-    const loaded=await this.episodesFor(s.title);
-    s.sources=[...new Set<string>(loaded.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
-    const chosen=loaded.episodes.find((e:any)=>e.number===ep.number);
-    if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
-    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:chosen.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,position};
+    // The episode list was loaded when the anime was picked, so play it straight away; asking the TV
+    // service for it again re-inspected every source (~4 s). A restarted service is handled by the retry below.
+    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,position};
     let result:any;
     try{result=await this.bridge.call('/api/play',playRequest)}
     catch(error){
@@ -205,8 +204,10 @@ export class Streaming {
       s.note='Reconnecting the streaming account…';await this.paint();
       await this.prepare();
       // Reconnecting restarts the TV service, which forgets the search it had cached; load the title again.
-      await this.episodesFor(s.title);
-      result=await this.bridge.call('/api/play',playRequest);
+      const loaded=await this.episodesFor(s.title);
+      const chosen=loaded.episodes.find((e:any)=>e.number===ep.number);
+      if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
+      result=await this.bridge.call('/api/play',{...playRequest,unit:chosen.id});
     }
     s.actualSource=result.provider;s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
   }

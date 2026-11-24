@@ -83,6 +83,8 @@ def clean_headers(raw):
 # Apply request headers when the provider needs a legitimate Referer/User-Agent.
 # Uses the existing pinned FFmpeg implementation; no arbitrary shell execution.
 X264_PRESETS={'ultrafast','superfast','veryfast','faster','fast','medium'}
+SLOW_PRESETS={'veryfast','faster','fast','medium'}
+_warned_preset=[]
 def _tune_x264(cmd):
     """Software-encoder quality knobs that the pinned player does not expose."""
     if '-c:v' not in cmd or cmd[cmd.index('-c:v')+1]!='libx264':return
@@ -94,6 +96,13 @@ def _tune_x264(cmd):
         cmd[cmd.index('-c:v'):cmd.index('-c:v')]=['-threads',threads]
         cmd[cmd.index('-i'):cmd.index('-i')]=['-threads',threads]
     preset=os.environ.get('STREAM_X264_PRESET','').strip().lower()
+    # Presets slower than superfast fell behind real time on the shared vCPUs (late frames, ffmpeg read
+    # stalls) and showed up as stutter. Keep them out unless STREAM_ALLOW_SLOW_PRESET=1 is set on purpose.
+    if preset in SLOW_PRESETS and os.environ.get('STREAM_ALLOW_SLOW_PRESET','').strip()!='1':
+        if not _warned_preset:
+            _warned_preset.append(preset)
+            logging.getLogger('camelot_online').warning('STREAM_X264_PRESET=%s is too slow for this host; using superfast (set STREAM_ALLOW_SLOW_PRESET=1 to force it)',preset)
+        preset='superfast'
     if preset in X264_PRESETS and '-preset' in cmd:cmd[cmd.index('-preset')+1]=preset
     # -tune zerolatency turns on sliced threads: with -threads 4 every picture became 4 slices, and the player
     # sends each slice as its own frame (4x the frame rate) while tiny non-first slices can crash libdave.

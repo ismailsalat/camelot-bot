@@ -99,3 +99,13 @@ test('after a crash the TV service restarts empty: the title is searched again b
   assert.equal(tv.session.actualSource,'hianime');
   assert(calls.indexOf('search')>calls.lastIndexOf('prepare'));assert(calls.indexOf('search')<calls.lastIndexOf('play'));
 });
+
+test('playing an already loaded episode does not re-inspect the sources',async()=>{
+  const tv:any=new Streaming();
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}};
+  const calls:string[]=[];let unit='';
+  tv.prepare=async()=>{};tv.paint=async()=>{};tv.persist=()=>{};
+  tv.bridge={call:async(path:string,body?:any)=>{calls.push(path);if(path==='/api/play'){unit=body.unit;return {provider:'hianime'}}return {}}};
+  await tv.startEpisode(0);
+  assert.deepEqual(calls,['/api/play']);assert.equal(unit,'e1');
+});
