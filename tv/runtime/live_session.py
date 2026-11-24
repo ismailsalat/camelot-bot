@@ -74,14 +74,41 @@ class LiveSession:
                 if conn:
                     try:await asyncio.wait_for(conn.disconnect(), 5)
                     except Exception:self.poisoned=True
+    def running_on(self, channel_id):
+        """True when a stream is already live in this voice channel."""
+        conn = self.connection
+        return bool(self.player and self.player.is_alive() and conn
+                    and str(getattr(conn, 'channel_id', channel_id)) == str(channel_id))
+
     async def start(self, guild, channel, url):
+        had_previous = bool(self.player or self.connection)
         await self.stop()
         if self.poisoned:raise RuntimeError('Restart streaming account before playing again')
-        vc = await asyncio.wait_for(ensure_voice(channel, guild.voice_client),25)
+        # Discord needs a moment to finish deleting the previous Go Live stream. Creating the
+        # next one immediately made it never answer, so the start timed out after 25 seconds.
+        if had_previous:await asyncio.sleep(1.5)
+        last = None
+        for attempt in range(3):
+            try:
+                await self._start_once(guild, channel, url, rejoin=attempt > 0)
+                return
+            except asyncio.CancelledError:raise
+            except Exception as exc:
+                last = exc
+                if self.poisoned or attempt == 2:break
+                await asyncio.sleep(2 + attempt * 2)
+        raise last
+
+    async def _start_once(self, guild, channel, url, rejoin=False):
+        if rejoin and guild.voice_client:
+            # A stale voice session is the usual reason a Go Live stream never answers.
+            try:await asyncio.wait_for(guild.voice_client.disconnect(force=True), 5)
+            except Exception:pass
+        vc = await asyncio.wait_for(ensure_voice(channel, guild.voice_client),15)
         conn = GoLiveConnection(self.bot, guild.id, channel.id, vc)
         self.connection = conn
         try:
-            await conn.connect(timeout=25)
+            await conn.connect(timeout=10)
             player = H264VideoPlayer(url=url, voice_client=_GoLiveVCProxy(conn),
                                      fps=_stream_fps(), live=False, audio=True)
             self.player = player

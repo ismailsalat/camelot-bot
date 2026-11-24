@@ -210,6 +210,9 @@ class CamelotOnline(commands.Bot):
 
     async def standby(self,job):
         async with self.play_lock:
+            # Already showing the standby slate in this channel: restarting Go Live here only
+            # risks a failed restart, so leave the running stream alone.
+            if self.mode=='standby' and self.live.running_on(str(job.get('channel',''))):return
             await self._play({'url':STANDBY,'channel':job.get('channel'),'title':'Camelot TV · Loading'})
 
     async def pause(self):
@@ -266,7 +269,7 @@ class CamelotOnline(commands.Bot):
             if self.reported and self.live.sender and not self.live.sender.is_alive():
                 await self.live.stop();self.mode='failed';emit('failed',message='Audio connection interrupted');return
             self.status()
-            if not self.reported and time.monotonic()-self.started>35:
+            if not self.reported and time.monotonic()-self.started>60:
                 await self.live.stop();self.mode='failed';emit('failed',message='Video did not start')
             return
         pos=self.position()

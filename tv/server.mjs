@@ -49,7 +49,11 @@ function workerStart(token,guild){
   if(worker.child) throw new Error('Streamer is already running');
   if(typeof token!=='string'||token.length<30||token.length>250||!/^[0-9]{15,22}$/.test(String(guild)))throw new Error('Missing or invalid streaming account token / server ID');
   const python=process.env.PYTHON_BIN || ((CLOUD||INTERNAL)?join(DIR,'.cloud-venv','bin','python'):'/home/'+(process.env.USER||'')+'/.local/share/camelot-tv/venv/bin/python');
-  const childEnv={...process.env, PYTHONUNBUFFERED:'1',STREAM_QUALITY:process.env.STREAM_QUALITY||'720p',STREAM_FPS:process.env.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'2500k'};
+  const childEnv={...process.env, PYTHONUNBUFFERED:'1',STREAM_QUALITY:process.env.STREAM_QUALITY||'720p',
+    // Software x264 on a shared Railway vCPU cannot hold 720p30 for real anime without stuttering.
+    // 540p at the anime-native 24 fps needs roughly a third of the CPU. Raise these in Railway if it runs smoothly:
+    // STREAM_RESOLUTION=1280:720  STREAM_FPS=30  STREAM_VIDEO_BITRATE=2500k
+    STREAM_RESOLUTION:process.env.STREAM_RESOLUTION||'960:540',STREAM_FPS:process.env.STREAM_FPS||'24',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'1800k'};
   delete childEnv.CAMELOT_STREAMER_TOKEN;delete childEnv.CAMELOT_ADMIN_KEY;delete childEnv.CAMELOT_BRIDGE_KEY;
   const child=spawn(python,['-u',join(DIR,'runtime','camelot_worker.py')],{
     cwd:join(DIR,'runtime'),
@@ -120,7 +124,11 @@ function knownMedia(){return [...cache.entries()].filter(([k,v])=>k.startsWith('
 async function discoverMatches(selection){
  const key=`matches:${selection.provider}:${selection.id}`;
  const stored=cachedGet(key);if(stored)return stored;
- // Search all enabled providers even when the user selected one source in search.
+ // The search the user just ran already cached every provider's hits. Reuse them instead of
+ // asking all eleven sources again, which cost another ~12 seconds before episodes loaded.
+ const already=matchingSources(selection,knownMedia());
+ if(already.length>=2){const reused={candidates:already,failures:[]};cachedSet(key,reused);return reused}
+ // Otherwise search all enabled providers even when the user selected one source in search.
  const sources=await searchCatalog(selection.title,'all');
  for(const item of sources.results)cachedSet(`media:${item.provider}:${item.id}`,item);
  let candidates=matchingSources(selection,knownMedia());

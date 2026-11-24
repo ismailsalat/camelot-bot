@@ -82,3 +82,54 @@ class CleanupFailureTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.to_thread(started.wait,1);task.cancel();finish.set()
         with self.assertRaises(asyncio.CancelledError):await task
         self.assertEqual(order,['joined','closed']);self.assertIsNone(s.cleanup)
+
+class RestartRetryTests(unittest.IsolatedAsyncioTestCase):
+    """Regression: a Go Live restart that Discord never answered used to fail the whole Play."""
+    async def test_start_retries_after_a_timed_out_connect_and_then_succeeds(self):
+        attempts=[]
+        async def ensure_voice(channel,vc):return object()
+        class Conn:
+            def __init__(self,bot,guild,channel,vc):self.channel_id=channel
+            async def connect(self,timeout=0):
+                attempts.append(timeout)
+                if len(attempts)<3:raise asyncio.TimeoutError()
+            async def disconnect(self):pass
+        class Player:
+            audio_fifo=__file__
+            def __init__(self,**kw):pass
+            def start(self):pass
+            def is_alive(self):return True
+            def is_source_active(self):return True
+        class Sender:
+            def __init__(self,*a):pass
+            def start(self):pass
+        live.ensure_voice=ensure_voice;live.GoLiveConnection=Conn;live.H264VideoPlayer=Player;live.GoLiveAudioSender=Sender;live._GoLiveVCProxy=lambda c:c;live._stream_fps=lambda:24
+        live.PCMReader=lambda path,player:types.SimpleNamespace(close=lambda:None)
+        real_sleep=asyncio.sleep
+        async def fast(delay,*a):await real_sleep(0)
+        live.asyncio=types.SimpleNamespace(sleep=fast,wait_for=asyncio.wait_for,to_thread=asyncio.to_thread,create_task=asyncio.create_task,shield=asyncio.shield,CancelledError=asyncio.CancelledError)
+        try:
+            guild=types.SimpleNamespace(id=1,voice_client=None)
+            s=live.LiveSession(None)
+            await s.start(guild,types.SimpleNamespace(id=2),'https://x')
+            self.assertEqual(len(attempts),3)
+            self.assertTrue(s.running_on(2))
+            self.assertFalse(s.running_on(3))
+        finally:
+            live.asyncio=asyncio
+
+    async def test_gives_up_with_the_last_error_after_three_attempts(self):
+        async def ensure_voice(channel,vc):return object()
+        class Conn:
+            def __init__(self,*a):pass
+            async def connect(self,timeout=0):raise asyncio.TimeoutError()
+            async def disconnect(self):pass
+        live.ensure_voice=ensure_voice;live.GoLiveConnection=Conn
+        real_sleep=asyncio.sleep
+        async def fast(delay,*a):await real_sleep(0)
+        live.asyncio=types.SimpleNamespace(sleep=fast,wait_for=asyncio.wait_for,to_thread=asyncio.to_thread,create_task=asyncio.create_task,shield=asyncio.shield,CancelledError=asyncio.CancelledError)
+        try:
+            with self.assertRaises(asyncio.TimeoutError):
+                await live.LiveSession(None).start(types.SimpleNamespace(id=1,voice_client=None),types.SimpleNamespace(id=2),'https://x')
+        finally:
+            live.asyncio=asyncio

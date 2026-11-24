@@ -34,8 +34,11 @@ export async function searchCatalog(q,which='all') {
   const targets=which==='all'?[...p.entries()]:[[which,p.get(which)]].filter(x=>x[1]);
   if(!targets.length)throw new Error('Unknown provider');
   const settled=await Promise.allSettled(targets.map(async([key,instance])=>{
-    const ac=AbortSignal.timeout(12500);
-    const rows=await bounded(instance.search(q,{signal:ac}),14000);
+    // One dead or slow source must not hold up the whole search: 11 run in parallel and the
+    // slowest used to decide the wait (12+ seconds every time). Tunable with PROVIDER_SEARCH_MS.
+    const budget=Math.max(3000,Number(process.env.PROVIDER_SEARCH_MS)||7000);
+    const ac=AbortSignal.timeout(budget);
+    const rows=await bounded(instance.search(q,{signal:ac}),budget+1500);
     return (Array.isArray(rows)?rows:[]).filter(r=>r && typeof r.id==='string' && r.id.startsWith(key+':'))
       .slice(0,12).map(r=>({id:r.id,provider:key,title:String(r.title||'Untitled').slice(0,125),
         poster:typeof r.thumbnailUrl==='string'?r.thumbnailUrl:'',year:r.year??null,
@@ -53,7 +56,7 @@ export async function searchCatalog(q,which='all') {
 export async function listEpisodes(provider,id) {
   const p=(await getProviders()).get(provider);
   if(!p || typeof id!=='string'||!id.startsWith(provider+':')||id.length>600)throw new Error('Invalid title/provider');
-  const rows=await bounded(p.fetchContentUnits(id,{signal:AbortSignal.timeout(26000)}),28000);
+  const rows=await bounded(p.fetchContentUnits(id,{signal:AbortSignal.timeout(14000)}),15000);
   if(!Array.isArray(rows)) throw new Error('Provider did not return an episode list');
   return rows.filter(r=>r && typeof r.id==='string' && r.id.startsWith(provider+':'))
     .slice(0,1000).map(r=>({id:r.id,title:String(r.title||`Episode ${r.number}`).slice(0,140),

@@ -203,14 +203,14 @@ export class Streaming {
         if(w.status==='streaming'){
           s.phase='playing';s.position=w.position;s.duration=w.duration;s.note='';
           if(s.position>this.lastPosition){this.lastMotion=Date.now();this.lastPosition=s.position;if(Date.now()-s.changed>15000)this.retries=0;}
-          else if(Date.now()-this.lastMotion>45000){await this.recoverLocked();return}
+          else if(Date.now()-this.lastMotion>60000){await this.recoverLocked();return}
         }else if(w.status==='paused'){s.phase='paused';s.position=w.position;}
         else if(w.status==='ended'){
           if(settings.autoNext&&s.episode<s.episodes.length-1){s.episode++;s.duration=null;s.position=0;await this.play();}
           else await this.release('Finished. Streaming is available.');
           return;
         }else if(['offline','failed'].includes(w.status)){await this.recoverLocked();return}
-        else if(s.phase==='loading'&&Date.now()-s.changed>45000){await this.recoverLocked();return}
+        else if(s.phase==='loading'&&Date.now()-s.changed>90000){await this.recoverLocked();return}
         this.persist();await this.paint();
       });
     }catch{
