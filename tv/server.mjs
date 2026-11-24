@@ -8,10 +8,11 @@ import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {getProviders,searchCatalog,listEpisodes,resolveEpisode} from './src/sdk.mjs';
 import {rankedStreams,preflightVideo} from './src/source.mjs';
-import {searchAnimeCatalog,sameAnime,expandQuery} from './src/catalog.mjs';
-import {candidatePlan,tryPlayableEpisode} from './src/playback.mjs';
-import {inspectSources,episodeMenu,matchingSources} from './src/availability.mjs';
-import {prepareCaptions,discardCaptions,SUBTITLE_CHOICES} from './src/subtitles.mjs';
+import {searchAnimeCatalog,expandQuery,stripYear} from './src/catalog.mjs';
+import {verifiedPlan,offeredLanguages,tryPlayableEpisode} from './src/playback.mjs';
+import {makeEntity,attachCandidates,searchRows,displayTitle} from './src/identity.mjs';
+import {verifyEntity} from './src/resolve.mjs';
+import {prepareCaptions,discardCaptions,describeTracks,SUBTITLE_CHOICES} from './src/subtitles.mjs';
 import {apiAccess,originAllowed} from './src/access.mjs';
 import {Timeline,redactText,redactArgs} from './src/timeline.mjs';
 import {health} from './src/health.mjs';
@@ -20,7 +21,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import os from 'node:os';
 
-const VERSION='0.13.0';
+const VERSION='0.14.0';
 const DIR=resolve(fileURLToPath(new URL('.',import.meta.url)));
 const INTERNAL=process.env.CAMELOT_INTERNAL==='1';
 const CLOUD=!INTERNAL&&Boolean(process.env.RAILWAY_ENVIRONMENT||process.env.CAMELOT_BIND_ALL);
@@ -194,7 +195,7 @@ async function probeSource(source){
  }));
 }
 const cache=new Map();
-function cachedSet(k,v){cache.set(k,{until:Date.now()+20*60*1000,value:v});if(cache.size>400)cache.delete(cache.keys().next().value)}
+function cachedSet(k,v,ttlMs=20*60*1000){cache.delete(k);cache.set(k,{until:Date.now()+ttlMs,value:v});if(cache.size>900)cache.delete(cache.keys().next().value)}
 function cachedGet(k){const r=cache.get(k);if(!r||r.until<Date.now()){cache.delete(k);return null}return r.value}
 const episodeRequests=new Map();
 async function cachedEpisodes(provider,media){
@@ -204,38 +205,67 @@ async function cachedEpisodes(provider,media){
  const pending=listEpisodes(provider,media).then(rows=>{cachedSet(key,rows);return rows;}).finally(()=>episodeRequests.delete(key));
  episodeRequests.set(key,pending);return pending;
 }
-function knownMedia(){return [...cache.entries()].filter(([k,v])=>k.startsWith('media:')&&v.until>Date.now()).map(([,v])=>v.value);}
-async function discoverMatches(selection){
- const key=`matches:${selection.provider}:${selection.id}`;
- const stored=cachedGet(key);if(stored)return stored;
- // The search the user just ran already cached every provider's hits. Reuse them instead of
- // asking all eleven sources again, which cost another ~12 seconds before episodes loaded.
- const already=matchingSources(selection,knownMedia());
- if(already.length>=2){const reused={candidates:already,failures:[]};cachedSet(key,reused);return reused}
- // Otherwise search all enabled providers even when the user selected one source in search.
- const sources=await searchCatalog(selection.title,'all');
- for(const item of sources.results)cachedSet(`media:${item.provider}:${item.id}`,item);
- let candidates=matchingSources(selection,knownMedia());
- const names=(selection.aliases||[]).filter(n=>n!==selection.title);
- if(candidates.length<2&&names.length){
-   const extra=await searchCatalog(names[0],'all');
-   for(const item of extra.results)cachedSet(`media:${item.provider}:${item.id}`,item);
-   candidates=matchingSources(selection,knownMedia());
- }
- const result={candidates,failures:sources.failures};cachedSet(key,result);return result;
+const ENTITY_TTL=6*3600*1000;
+const matchLog=[];            // bounded record of every "which anime is this" decision, shown in diagnostics
+function noteMatch(entity,verified){
+  const lines=verified.report.map(l=>scrub(l));
+  for(const l of lines)log(/REJECT|PENDING/.test(l)?'warning':'info',l);
+  timeline.record('match_report',{cid:currentCid,entity:entity.key,title:entity.title,year:entity.year,total:entity.total,
+    accepted:verified.accepted.map(r=>r.provider),rejected:verified.rejected.map(r=>({provider:r.provider,count:r.count,reason:r.reason})),pending:verified.pending});
+  matchLog.push({at:new Date().toISOString(),entity:entity.key,title:entity.title,year:entity.year,format:entity.format,total:entity.total,lines:lines.slice(0,40)});
+  while(matchLog.length>12)matchLog.shift();
+}
+/** The entity (one real anime) behind a row the user picked. Rows from an older search fall back to a one-off entity. */
+function entityFor(selection){
+  const key=cachedGet(`entityOf:${selection.provider}:${selection.id}`)||selection.entity;
+  const found=key&&cachedGet(`entity:${key}`);
+  if(found)return found;
+  const e=makeEntity({...selection,id:selection.provider==='catalog'?selection.id:`p:${selection.id}`});
+  if(selection.provider!=='catalog'){e.orphan=true;e.candidates.push({provider:selection.provider,id:selection.id,title:selection.title,year:selection.year||null,names:e.names,languages:[],confirm:'name',ambiguousWith:[]})}
+  return e;
+}
+const shownName=entity=>displayTitle(entity,[entity,...(entity.siblings||[]).map(k=>cachedGet(`entity:${k}`)).filter(Boolean)]);
+const siblingMap=entity=>new Map([entity,...(entity.siblings||[]).map(k=>cachedGet(`entity:${k}`)).filter(Boolean)].map(e=>[e.key,e]));
+/** Provider listings for one anime: attach whatever the providers have, list episodes, keep only the verified ones. */
+async function verifiedFor(entity){
+  const stored=cachedGet(`verified:${entity.key}`);if(stored)return stored;
+  const pool=siblingMap(entity);
+  let failures=[];
+  const distinct=new Set(entity.candidates.map(c=>c.provider)).size;
+  if(distinct<3&&!cachedGet(`matches:${entity.key}`)){
+    // The search the user ran only covered their own words; ask every provider for this exact title once.
+    const found=await searchCatalog(stripYear(entity.title),'all').catch(()=>({results:[],failures:[{provider:'anime-sdk',reason:'provider engine unavailable'}]}));
+    failures=found.failures||[];
+    const decisions=attachCandidates([...pool.values()],found.results);
+    cachedSet(`matches:${entity.key}`,{failures},20*60*1000);
+    for(const d of decisions)log('info',`Source match: ${d.provider} "${String(d.title).slice(0,40)}" -> ${d.confirm}${d.entity.includes('|')?' (several versions share this title)':''}`);
+  }
+  const verified=await verifyEntity(entity,{byKey:pool,list:cachedEpisodes,graceMs:Number(process.env.EPISODE_GRACE_MS)||3000,searchIncomplete:failures.length>0});
+  verified.failures=failures;
+  noteMatch(entity,verified);
+  // A listing that was still loading is verified next time; do not remember an incomplete answer for hours.
+  cachedSet(`verified:${entity.key}`,verified,verified.pending?2*60*1000:ENTITY_TTL);
+  return verified;
 }
 async function loadTitle(selection){
- const found=await discoverMatches(selection);
- const rows=await inspectSources(selection,found.candidates,cachedEpisodes,{graceMs:Number(process.env.EPISODE_GRACE_MS)||3000});
- const episodes=episodeMenu(rows,{incomplete:found.failures.length>0});
- const selected=selection.provider==='catalog'?found.candidates[0]:selection;
- if(!selected||!episodes.length)throw new Error('No matching source returned episodes. Try Refresh Sources or another title.');
- const selectedWithAliases={...selected,aliases:[selection.title,...(selection.aliases||[])]};
- cachedSet(`media:${selected.provider}:${selected.id}`,selectedWithAliases);
- cachedSet(`episodes:${selected.provider}:${selected.id}`,episodes);
- const availability={sources:rows.map(r=>({provider:r.provider,status:r.status,episodeCount:r.episodes.length})),failures:found.failures};
- cachedSet(`availability:${selected.provider}:${selected.id}`,availability);
- return {episodes,selection:selectedWithAliases,...availability};
+ const entity=entityFor(selection);
+ const verified=await verifiedFor(entity);
+ const {accepted,menu:episodes}=verified;
+ if(!accepted.length||!episodes.length){
+   const why=verified.rejected.length?` ${verified.rejected.length} listing(s) were rejected because they are a different version of the anime (see the match report).`:'';
+   throw new Error(`No verified source for "${shownName(entity)}".${why} Try Refresh Sources or another title.`);
+ }
+ const pref=['animeparadise','anikoto','megaplay','anineko','allmanga','gogoanime','goyabu'];
+ const best=[...accepted].sort((a,z)=>(pref.indexOf(a.provider)+100)%100-(pref.indexOf(z.provider)+100)%100)[0];
+ const raw=cachedGet(`media:${best.provider}:${best.media}`)||{provider:best.provider,id:best.media,title:best.title};
+ const selected={...raw,provider:best.provider,id:best.media,title:shownName(entity),aliases:[entity.title,...(entity.aliases||[])].slice(0,12),year:entity.year,format:entity.format,entity:entity.key};
+ cachedSet(`media:${selected.provider}:${selected.id}`,selected,ENTITY_TTL);
+ cachedSet(`entityOf:${selected.provider}:${selected.id}`,entity.key,ENTITY_TTL);
+ cachedSet(`episodes:${selected.provider}:${selected.id}`,episodes,ENTITY_TTL);
+ const sources=verified.results.map(r=>({provider:r.provider,status:r.pending?'unavailable':'checked',episodeCount:r.count,accepted:Boolean(r.accept),reason:r.reason}));
+ return {episodes,selection:selected,sources,failures:verified.failures||[],
+   entity:{key:entity.key,title:shownName(entity),year:entity.year,format:entity.format,total:entity.total,status:entity.status},
+   rejected:verified.rejected.map(r=>({provider:r.provider,title:r.title,count:r.count,reason:r.reason})),report:verified.report};
 }
 let playBusy=false;
 let playGeneration=0; // Stop requests can abort an in-progress episode verification.
@@ -259,6 +289,7 @@ function diagnostics(cid=''){
     tvProcess:{eventLoopDelayMs:{p50:ms(loop.percentile(50)),p99:ms(loop.percentile(99)),max:ms(loop.max)},rssMb:Math.round(process.memoryUsage().rss/1048576),memory:memoryReport(),
       cgroupCpuStat:cg('/sys/fs/cgroup/cpu.stat')?.split('\n').filter(l=>/throttled|nr_periods|usage_usec/.test(l)).join(' ')||null,cpus:os.availableParallelism?.()??os.cpus().length},
     providerHealth:health.summary(),
+    matching:matchLog.slice(-8),
     summaries:cids.map(c=>timeline.summarize(c)),
     timeline:redactRows(rows.slice(-400)),logs:logs.slice(-60).map(l=>({time:l.time,kind:l.kind,msg:scrub(l.msg)}))};
 }
@@ -294,9 +325,18 @@ const server=http.createServer(async(req,res)=>{
        provider==='catalog'?Promise.resolve({results:[],failures:[]}):searchCatalog(q,provider).catch(e=>({results:[],failures:[{provider:'anime-sdk',reason:'provider engine unavailable'}]})),
        provider==='all'||provider==='catalog'?searchAnimeCatalog(q):Promise.resolve({results:[],source:null,errors:[]})
      ]);
-     const results=[...sources.results.map(r=>({...r,poster:r.poster||meta.results.find(m=>sameAnime(m,r))?.poster||'',availability:'source-candidate'})),...meta.results];
-     for(const r of results)cachedSet(`media:${r.provider}:${r.id}`,r);
-     log('info',`Anime search: ${sources.results.length} online source candidates, ${meta.results.length} catalog titles (${sources.failures.length} provider errors)`);
+     // One row per real anime (catalogue entity). Provider hits attach to the entity they really are; remakes that share a name
+     // stay separate rows with their year. Movies, OVAs and specials come after the TV series.
+     const entities=meta.results.map(makeEntity);
+     const decisions=attachCandidates(entities,sources.results);
+     const built=searchRows(entities,q,20);const ranked=built.map(x=>x.entity);
+     const results=built.map(({entity:e,row:out})=>{
+       cachedSet(`entity:${e.key}`,e,ENTITY_TTL);cachedSet(`entityOf:${out.provider}:${out.id}`,e.key,ENTITY_TTL);cachedSet(`media:${out.provider}:${out.id}`,out,ENTITY_TTL);
+       return out;
+     });
+     log('info',`Anime search "${q}": ${meta.results.length} catalogue titles, ${sources.results.length} source listings (${sources.failures.length} provider errors) -> ${results.length} entries`);
+     for(const e of ranked.slice(0,6))log('info',`  ${displayTitle(e,entities)} [${e.format||'?'} ${e.year||'?'} ${e.total||'?'} eps]: ${e.candidates.length?e.candidates.map(c=>`${c.provider}(${c.confirm})`).join(', '):'no sources found'}`);
+     for(const d of decisions.filter(d=>d.confirm==='own-entity'))log('info',`  not in the catalogue: ${d.provider} "${String(d.title).slice(0,40)}" (${d.note})`);
      if(!results.length){
        const detail=[...sources.failures.map(f=>`${f.provider}: ${f.reason}`),...meta.errors].join('; ');
        log('warning',`Search returned nothing. ${detail||'No matching titles from configured providers'}`);
@@ -309,10 +349,10 @@ const server=http.createServer(async(req,res)=>{
      const selection=cachedGet(`media:${p}:${id}`);
      if(!selection)throw new Error('Search for this anime first');
      if(url.searchParams.get('refresh')==='1'){
-       for(const key of [...cache.keys()])if(/^(matches:|source-episodes:|availability:)/.test(key))cache.delete(key);
+       for(const key of [...cache.keys()])if(/^(matches:|source-episodes:|availability:|verified:)/.test(key))cache.delete(key);
      }
      const loaded=await loadTitle(selection);
-     log('info',`Checked ${loaded.sources.length} matching source listings; ${loaded.episodes.length} episodes with Sub/Dub availability`);
+     log('info',`Verified ${loaded.sources.filter(x=>x.accepted).length} of ${loaded.sources.length} source listings for ${loaded.entity.title}${loaded.entity.year?` (${loaded.entity.year})`:''}; ${loaded.episodes.length} episodes with Sub/Dub availability`);
      return json(res,200,loaded);
    }
    if(path==='/api/diagnostics'){
@@ -350,22 +390,43 @@ const server=http.createServer(async(req,res)=>{
        if(!SUBTITLE_CHOICES.includes(captions))throw new Error('Choose a supported subtitle language');
        if(role==='bridge'&&String(b.guild||'')!==String(worker.guild||process.env.CAMELOT_GUILD_ID||''))throw new Error('This TV worker is paired with a different server');
        const original=cachedGet(`media:${provider}:${media}`);
-       const found=await discoverMatches(original);
-       let queue=candidatePlan({provider,media,alt:true},original,found.candidates,lang);
+       // Only listings already verified as THIS anime may play (never another version with the same title), and only
+       // those that list the requested language for this episode. Sub/Dub therefore stays on the same anime.
+       const entity=entityFor(original);
+       const verified=await verifiedFor(entity);
+       const shownTitle=shownName(entity);
+       let queue=verifiedPlan(verified.accepted,{provider,media},chosen.number,lang);
        if(b.source&&b.source!=='auto'){if(!queue.some(q=>q.provider===b.source))throw new Error('Selected source does not match this title');queue.sort((a,z)=>Number(z.provider===b.source)-Number(a.provider===b.source));}
-       if(!queue.length)throw new Error('Selected source does not match this title');
+       if(!queue.length){
+         const offered=offeredLanguages(verified.accepted,chosen.number).map(l=>l.toUpperCase());
+         timeline.record('language_unavailable',{cid,gen:generation,entity:entity.key,episode:chosen.number,requested:lang,offered});
+         throw new Error(`No verified source lists ${lang.toUpperCase()} for episode ${chosen.number} of ${shownTitle}${offered.length?` (available: ${offered.join(', ')})`:''}. Another version of the anime is never used instead.`);
+       }
        // Only show the standby slate when nothing is live yet. While a stream is already up (switching episodes),
        // keep it playing during verification and swap once: that avoids a second Go Live restart (~8 s).
        if(!checkOnly&&!['standby','streaming','paused','starting','requested'].includes(worker.status))await commands.request({op:'standby',channel});
        queue=health.order(queue);
        timeline.record('resolve_start',{cid,gen:generation,providers:queue.map(q=>q.provider),episode:chosen.number});
-       log('info',`Testing ${queue.length} matching provider(s) for episode ${chosen.number}: ${queue.map(q=>q.provider).join(', ')}`);
+       log('info',`Testing ${queue.length} verified provider(s) for ${shownTitle} episode ${chosen.number} ${lang.toUpperCase()}: ${queue.map(q=>q.provider).join(', ')}`);
        const result=await tryPlayableEpisode({
          health,concurrency:3,providerTimeoutMs:9000,
          onEvent:ev=>{const {ev:name,...rest}=ev;timeline.record(name,{cid,gen:generation,...rest})},
          queue,episode:chosen,language:lang,
          list:cachedEpisodes,resolve:resolveEpisode,rank:rankedStreams,
-         prepare:async source=>{const prepared=await prepareCaptions(source,captions,{shouldStop:()=>generation!==playGeneration||Date.now()>deadline});if(prepared.subtitleDir)captionFiles.add(prepared);return prepared;},
+         prepare:async (source,entry)=>{
+           const tracks=describeTracks(source.subtitles);
+           try{
+             const prepared=await prepareCaptions(source,captions,{shouldStop:()=>generation!==playGeneration||Date.now()>deadline});
+             if(prepared.subtitleDir)captionFiles.add(prepared);
+             const st=prepared.subtitleStatus||{};
+             timeline.record('subtitles',{cid,gen:generation,provider:entry?.provider,mode:st.mode,label:st.label||null,tracks});
+             log('info',st.mode==='burned'?`Subtitles: burning ${st.label||captions} captions from ${entry?.provider} (${tracks.length} track(s) offered)`:`Subtitles: off for this stream (requested: ${captions})`);
+             return prepared;
+           }catch(e){
+             timeline.record('subtitles_failed',{cid,gen:generation,provider:entry?.provider,requested:captions,tracks,reason:String(e?.message||e).slice(0,160)});
+             throw e;
+           }
+         },
          discard:discardPrepared,
          probe:(mediaUrl,headers,isHLS,source)=>preflightVideo(mediaUrl,headers,35000,{isHLS,subtitlePath:source.subtitlePath,shouldStop:()=>generation!==playGeneration||Date.now()>deadline}),
          shouldStop:()=>generation!==playGeneration||Date.now()>deadline,

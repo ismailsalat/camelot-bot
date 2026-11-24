@@ -28,6 +28,10 @@ export function explicitSeason(title:string):number|null{
 /** A release year written in the title, like "(2011)", or null. */
 export const releaseTag=(title:string)=>title.match(/\((19[5-9]\d|20\d\d)\)/)?.[1]??null;
 export const isSpecial=(title:string)=>SPECIAL.test(norm(title));
+/** Movies, OVAs and specials are not seasons, whatever they are called. */
+const NOT_SEASON=new Set(['MOVIE','OVA','SPECIAL','MUSIC']);
+const isExtra=(t:Title)=>isSpecial(t.title)||(t.format!==undefined&&NOT_SEASON.has(t.format));
+const withoutYear=(title:string)=>norm(title.replace(/\((?:19[5-9]\d|20\d\d)\)/g,' ').replace(/\((?:tv|tv series)\)/gi,' ').replace(/\s(?:19[5-9]\d|20\d\d)$/,''));
 
 type Hint={year?:number;count?:number};
 function hintsFor(all:Array<Title&Hint>):Map<string,Hint>{
@@ -44,16 +48,14 @@ export function buildFamily(selected:Title,rows:Title[],everything:Title[]=rows)
   const key0=baseKey(selected.title);
   if(key0.length<3)return [];
   let near=rows.filter(r=>{const k=baseKey(r.title);return k.length>=3&&(k.startsWith(key0)||key0.startsWith(k))});
-  // "Hunter x Hunter (1999)" and "Hunter x Hunter (2011)" are two adaptations of the same story, not season 1 and 2.
-  // When the siblings carry different release years in their names, keep only the one the person picked.
-  const tagYears=new Set(near.map(r=>releaseTag(r.title)).filter(Boolean));
-  if(tagYears.size>1){const mine=releaseTag(selected.title);near=near.filter(r=>releaseTag(r.title)===mine)}
+  // Two TV rows with the same name are adaptations of one story (1999 and 2011), never season 1 and season 2.
+  near=near.filter(r=>r===selected||(r.id===selected.id&&r.provider===selected.provider)||norm(r.title)===norm(selected.title)||isExtra(r)||isExtra(selected)||withoutYear(r.title)!==withoutYear(selected.title));
   if(near.length<2)return [];
   const root=near.map(r=>baseKey(r.title)).sort((a,b)=>a.length-b.length)[0]!;
   const hints=hintsFor(everything as Array<Title&Hint>);
   const members=near.filter(r=>baseKey(r.title).startsWith(root)).map((r,index)=>{
     const h=[r.title,...(r.aliases||[])].map(n=>hints.get(norm(n))).find(x=>x?.year||x?.count)||{};
-    return {r,index,year:(r as Title&Hint).year??h.year,count:(r as Title&Hint).count??h.count,explicit:explicitSeason(r.title),special:isSpecial(r.title)};
+    return {r,index,year:(r as Title&Hint).year??h.year,count:(r as Title&Hint).count??h.count,explicit:explicitSeason(r.title),special:isExtra(r)};
   });
   if(members.length<2)return [];
   const main=members.filter(m=>!m.special),extra=members.filter(m=>m.special);

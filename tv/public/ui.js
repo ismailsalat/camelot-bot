@@ -56,16 +56,8 @@ $('connect').addEventListener('click',async()=>{
 });
 $('disconnect').addEventListener('click',async()=>{try{await request('/api/disconnect','POST',{});setMessage('play-message','Disconnect requested.');}catch(e){fail('play-message',e);}});
 function normName(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');}
-function groupAnimeResults(results){
- const groups=[];
- for(const item of [...results.filter(x=>x.provider==='catalog'),...results.filter(x=>x.provider!=='catalog')]){
-  const name=normName(item.title);if(!name)continue;
-  let g=groups.find(g=>g.key===name&&(!g.year||!item.year||Math.abs(g.year-item.year)<=1));
-  if(!g){g={key:name,year:item.year||null,item,sources:new Set()};groups.push(g);}
-  if(item.provider!=='catalog')g.sources.add(item.provider);else g.item=item;
- }
- return groups;
-}
+// The server already returns one row per real anime (with its year, type and sources); nothing is merged here.
+function groupAnimeResults(results){return results.map(item=>({item,year:item.year||null,sources:new Set(item.sources||[]),description:item.description||''}))}
 async function doSearch(){
  if(requesting)return;selectionEpoch++;busy(true);series=null;episodes=[];$('results').replaceChildren();$('episode').replaceChildren(option('Choose a title',''));$('selected').textContent='No anime selected.';
  setMessage('search-message','Searching all selected sources...');describeAvailability();
@@ -76,7 +68,7 @@ async function doSearch(){
   for(const g of groups){
    const button=document.createElement('div');button.className='result';button.setAttribute('role','button');button.tabIndex=0;
    const title=document.createElement('strong');title.textContent=g.item.title;
-   const tag=document.createElement('small');tag.textContent=`${g.year||'Year unknown'} · ${g.sources.size} source listings`;
+   const tag=document.createElement('small');tag.textContent=g.description||`${g.year||'Year unknown'} · ${g.sources.size} source listings`;
    button.append(title,tag);button.addEventListener('click',()=>chooseSeries(g.item,button));button.addEventListener('keydown',e=>{if(e.key==='Enter')chooseSeries(g.item,button);});$('results').appendChild(button);
   }
  }catch(e){fail('search-message',e);}finally{busy(false);}

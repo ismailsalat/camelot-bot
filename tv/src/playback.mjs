@@ -4,7 +4,7 @@ import {normTitle, sameAnime} from './catalog.mjs';
 import {episodeLanguages} from './availability.mjs';
 
 const PROVIDER_PREFERENCE = ['animeparadise','anikoto','megaplay','anineko','allmanga','gogoanime','goyabu'];
-const preference = provider => {
+export const preference = provider => {
   const index=PROVIDER_PREFERENCE.indexOf(provider);
   return index < 0 ? 99 : index;
 };
@@ -171,4 +171,29 @@ export async function tryPlayableEpisode({queue, episode, language, list, resolv
   error.failures=failures;
   throw error;
   }finally{finished=true}
+}
+
+/**
+ * The providers that may play this episode: only listings already verified as the chosen anime, only those that list the
+ * requested language for this episode number. A different version of the anime (or the other language) is never queued.
+ * The provider the user was already on goes first, the rest follow in preference order.
+ */
+export function verifiedPlan(accepted, primary, number, language='sub') {
+  const out=[], seen=new Set();
+  for (const row of accepted||[]) {
+    const key=`${row.provider}:${row.media}`;
+    if (seen.has(key)) continue;
+    const eps=(row.episodes||[]).filter(e=>Number(e.number)===Number(number));
+    if (!eps.length) continue;
+    if (!eps.some(e=>allowedLanguages(e,language))) continue;
+    seen.add(key);out.push({provider:row.provider,media:row.media,alt:true});
+  }
+  out.sort((a,b)=>(Number(b.provider===primary?.provider&&b.media===primary?.media)-Number(a.provider===primary?.provider&&a.media===primary?.media))||preference(a.provider)-preference(b.provider));
+  return out;
+}
+/** Which languages the verified listings offer for one episode (for a clear error when the requested one is missing). */
+export function offeredLanguages(accepted, number) {
+  const langs=new Set();
+  for (const row of accepted||[]) for (const e of (row.episodes||[]).filter(x=>Number(x.number)===Number(number))) for (const l of (e.languages||[])) langs.add(l);
+  return [...langs];
 }

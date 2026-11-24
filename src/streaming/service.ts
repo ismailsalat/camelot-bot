@@ -193,7 +193,7 @@ export class Streaming {
     await this.prepare();
     const [data]=await Promise.all([this.episodesFor(title),this.bridge.call('/api/standby',{channel:s.channel})]);
     s.title={...title,...data.selection,poster:title.poster||data.selection.poster};s.episodes=data.episodes;s.episode=0;
-    s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
+    s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked'&&x.accepted!==false).map((x:any)=>x.provider))];
     s.source='auto';s.actualSource=undefined;s.hd=false;s.quality='720p';s.epPage=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
   }
   private async play(position=0,initiator:'user'|'auto'|'recovery'|'queue'='user'){this.initiator=initiator;try{await this.playback(()=>this.startEpisode(position))}finally{this.initiator='user'}}
@@ -224,7 +224,7 @@ export class Streaming {
       result=await this.bridge.call('/api/play',{...playRequest,unit:chosen.id});
     }
     botTimeline.mark('play_acked',{cid,provider:result.provider,quality:result.streamQuality});
-    s.actualSource=result.provider;s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
+    s.actualSource=result.provider;s.subtitle=result.subtitle?.mode==='burned'?'EN subtitles':s.lang==='sub'?'no subtitles':'';s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
     this.followUp();
   }
   private async release(note='Available. Use /stream to take a turn.'){
@@ -508,9 +508,10 @@ export class Streaming {
           await this.bridge.start();const found=await this.bridge.call('/api/search?'+new URLSearchParams({q}));
           const seen=new Set<string>();
           const all=(found.results as any[]).map(t=>({...t,count:t.count??t.numberOfEpisodes})) as Title[];
-          const rows=all.filter(t=>{const key=t.title.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g,'');if(seen.has(key))return false;seen.add(key);return true}).slice(0,25);if(!rows.length)throw new Error('No results. Try another spelling.');
+          // The TV service returns one row per real anime, already ordered (TV first, then movies and specials). Only drop exact repeats of the same anime.
+          const rows=all.filter(t=>{const key=t.entity||`${t.provider}:${t.id}`;if(seen.has(key))return false;seen.add(key);return true}).slice(0,25);if(!rows.length)throw new Error('No results. Try another spelling.');
           const key=randomBytes(5).toString('hex');this.searchResults.set(key,{owner:member.id,session:s.id,rows,all,expires:Date.now()+600000});
-          const select=new StringSelectMenuBuilder().setCustomId(`tv:${s.id}:${op==='qaddInput'?'qpick':'pick'}:${key}`).setPlaceholder('Choose anime').addOptions(rows.map((t,n)=>({label:t.title.slice(0,100),description:t.provider,value:String(n)})));
+          const select=new StringSelectMenuBuilder().setCustomId(`tv:${s.id}:${op==='qaddInput'?'qpick':'pick'}:${key}`).setPlaceholder('Choose anime').addOptions(rows.map((t,n)=>({label:t.title.slice(0,100),description:(t.description||t.provider).slice(0,100),value:String(n)})));
           await i.editReply({content:'Choose a title.',components:[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],allowedMentions:NO_MENTIONS});return;
         }
         if(i.isStringSelectMenu()&&op==='qpick'){
@@ -554,7 +555,13 @@ export class Streaming {
           boundedPosition(n,s.duration);await this.playback(async()=>{await this.bridge.call('/api/seek',{position:n});s.position=n});
         }else if(op==='source'&&i.isStringSelectMenu()){
           const source=i.values[0]!;if(source!=='auto'&&!s.sources.includes(source))throw new Error('That source is no longer available.');s.source=source;this.retries=0;if(s.phase!=='idle')await this.play(s.position);
-        }else if(op==='lang'){s.lang=s.lang==='dub'?'sub':'dub';if(s.title&&s.phase!=='idle')await this.play(s.position);}
+        }else if(op==='lang'){
+          const target=s.lang==='dub'?'sub':'dub';
+          const here=s.episodes[s.episode];
+          // The episode list holds only listings verified as this exact anime. If none of them has this language for this episode,
+          // say so and change nothing, instead of hunting for the language in another version of the show.
+          if(s.title&&here&&here.availability?.[target]?.status==='not-listed')throw new Error(`${s.title.title.slice(0,60)} episode ${here.number} has no ${target.toUpperCase()} in the verified sources. Nothing was changed.`);
+          s.lang=target;s.subtitle=undefined;if(s.title&&s.phase!=='idle')await this.play(s.position);}
         else if(op==='play'){
           this.retries=0;
           if(s.phase==='playing'){await this.playback(async()=>{await this.bridge.call('/api/pause',{});s.phase='paused';s.position=(await this.bridge.call<WorkerState>('/api/state')).position});}
@@ -606,7 +613,7 @@ export class Streaming {
     const tv=this.bridge.running?await this.bridge.call('/api/diagnostics'+(this.cid?'?cid='+encodeURIComponent(this.cid):'')).catch((e:Error)=>({error:'TV diagnostics unavailable: '+e.message.slice(0,120)})):{error:'TV service is not running'};
     const s=this.session;
     const bot={generatedAt:new Date().toISOString(),node:process.version,commit:(process.env.RAILWAY_GIT_COMMIT_SHA||'').slice(0,12)||null,cid:this.cid??null,
-      session:s?{phase:s.phase,episode:s.episodes[s.episode]?.number??null,source:s.actualSource||s.source,lang:s.lang,quality:s.quality,queue:s.queue?.length??0,rejoinWanted:this.rejoinWanted,lastWorkerStatus:this.lastWorkerStatus}:null,
+      session:s?{phase:s.phase,title:s.title?.title??null,entity:s.title?.entity??null,format:s.title?.format??null,year:s.title?.year??null,subtitle:s.subtitle??null,episode:s.episodes[s.episode]?.number??null,source:s.actualSource||s.source,lang:s.lang,quality:s.quality,queue:s.queue?.length??0,rejoinWanted:this.rejoinWanted,lastWorkerStatus:this.lastWorkerStatus}:null,
       summary:this.cid?botTimeline.summary(this.cid):null,timeline:botTimeline.all().slice(-300)};
     const text=JSON.stringify({bot,tv},null,1).replace(/https?:\/\/[^\s"\\]+/g,'[url]');
     return new AttachmentBuilder(Buffer.from(text,'utf8'),{name:`camelot-streaming-diagnostics-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`});
@@ -625,7 +632,9 @@ export class Streaming {
       if(w.config)lines.push(`Video: ${w.config.resolution} at ${w.config.fps} fps · ${w.config.bitrate} · x264 ${w.config.preset} · ${w.config.threads} threads`);
       for(const fix of w.envFixes??[])lines.push('Setting fixed: '+clean(fix).slice(0,200));
       if(w.lastError)lines.push('Last error: '+clean(w.lastError).slice(0,200));
-      const recent=(w.logs??[]).slice(-10).map(l=>`${l.time} ${l.kind}: ${clean(l.msg).slice(0,140)}`);
+      const match=(w.logs??[]).filter(l=>/Match report|ACCEPT |REJECT |PENDING |Subtitles:|Source match|Anime search/.test(l.msg)).slice(-10).map(l=>clean(l.msg).slice(0,150));
+      if(match.length)lines.push('Which anime / subtitles:\n```\n'+match.join('\n')+'\n```');
+      const recent=(w.logs??[]).slice(-6).map(l=>`${l.time} ${l.kind}: ${clean(l.msg).slice(0,140)}`);
       if(recent.length)lines.push('Recent TV log:\n```\n'+recent.join('\n')+'\n```');
     }
     lines.push('The full detail is in the Railway logs; lines starting with [stream] and [tv] are Streaming.');

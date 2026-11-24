@@ -6,12 +6,18 @@ export interface Title {
   season?:number;
   /** The other seasons found in the same search, in watching order. */
   family?:Title[];
+  /** From the TV service's catalogue match: TV/MOVIE/OVA/..., airing status, the providers that carry it, and a one-line summary for the picker. */
+  format?:string;status?:string;sources?:string[];description?:string;
+  /** The one real anime this row is (the TV service verifies every source listing against it). */
+  entity?:string;
 }
-export interface Episode {id:string;number:number;title:string;languages?:string[]}
+export interface Episode {id:string;number:number;title:string;languages?:string[];availability?:Record<string,{status:string;providers?:string[]}>}
 export type Phase='idle'|'loading'|'playing'|'paused'|'offline'|'error';
 export interface Session {
   id:string;guild:string;channel:string;message?:string;owner:string|null;
   title?:Title;episodes:Episode[];episode:number;sources:string[];source:string;actualSource?:string;
+  /** What happened to subtitles on the last start: 'burned' (English subtitles are in the picture), or the reason there are none. */
+  subtitle?:string;
   lang:'sub'|'dub';phase:Phase;position:number;duration:number|null;changed:number;note:string;
   /** Anime waiting to play after the current one, in order. */
   queue?:Title[];

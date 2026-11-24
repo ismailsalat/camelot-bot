@@ -12,10 +12,17 @@ export function pickSubtitle(tracks,language='en') {
   if(language==='off')return null;
   const words=aliases[language];
   if(!words)throw new Error('Unsupported subtitle language');
-  const matches=(tracks||[]).filter(t=>[t.language,t.label].some(v=>words.some(w=>String(v||'').toLowerCase()===w||String(v||'').toLowerCase().startsWith(w+' ')||String(v||'').toLowerCase().startsWith(w+'-'))));
+  const names=t=>[t.language,t.label].map(v=>String(v||'').toLowerCase().trim()).filter(Boolean);
+  const exact=t=>names(t).some(v=>words.some(w=>v===w||v.startsWith(w+' ')||v.startsWith(w+'-')||v.startsWith(w+'_')));
+  // "English (CC)", "English - Subs", "[English]": the language name as a whole word anywhere in the label also counts.
+  const long=words.filter(w=>w.length>=3);
+  const named=t=>names(t).some(v=>long.some(w=>new RegExp(`(?:^|[^a-z])${w}(?:[^a-z]|$)`).test(v)));
+  const usable=(tracks||[]).filter(t=>t&&(exact(t)||named(t)));
   // Prefer complete dialogue captions over signs/songs-only tracks.
-  return matches.sort((a,b)=>Number(/sign|song|forced/i.test(a.label||''))-Number(/sign|song|forced/i.test(b.label||'')))[0]||null;
+  return usable.sort((a,b)=>Number(/sign|song|forced/i.test(a.label||''))-Number(/sign|song|forced/i.test(b.label||''))||Number(exact(b))-Number(exact(a)))[0]||null;
 }
+/** Short, safe description of what a source offered: used in logs and diagnostics. */
+export function describeTracks(tracks){return (tracks||[]).slice(0,8).map(t=>String(t?.label||t?.language||'').replace(/[^\w .()\-\[\]]/g,'').slice(0,30)||'?')}
 export function detectSubtitleFormat(text) {
   const content=String(text).replace(/^\uFEFF/,'').trimStart();
   if(content.length>LIMIT||content.includes('\0'))throw new Error('Invalid subtitle file');
@@ -71,7 +78,10 @@ export async function prepareCaptions(source,choice='en',{shouldStop=()=>false}=
   if(choice==='off')return {...source,subtitleStatus:{mode:'off',label:'Off'}};
   const track=pickSubtitle(source.subtitles,choice);
   // Never label untranslated video as subtitled. Try the next source instead.
-  if(!track)throw new Error(`No separate ${choice.toUpperCase()} captions from this source. Trying another source; choose Subtitles Off to allow video without a separate caption track.`);
+  if(!track){
+    const offered=describeTracks(source.subtitles);
+    throw new Error(`No separate ${choice.toUpperCase()} captions from this source (it offered: ${offered.length?offered.join(', '):'no caption tracks'}). Trying another source; choose Subtitles Off to allow video without a separate caption track.`);
+  }
   const text=await fetchSubtitle(track.url,source.headers);
   const files=await prepareSubtitleText(text,{shouldStop});
   return {...source,...files,subtitleStatus:{mode:'burned',language:choice,label:String(track.label||choice).slice(0,80)}};

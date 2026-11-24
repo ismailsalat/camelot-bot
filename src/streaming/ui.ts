@@ -65,7 +65,7 @@ export function panel(s:Session,queue:number){
   const state={idle:s.owner?'Ready':'Available',loading:'⏳ Loading…',playing:'▶ Playing',paused:'⏸ Paused',offline:'Offline',error:'Try another source'}[s.phase];
   const season=seasonText(s.title);
   const total=s.episodes.length;
-  const where=has?[season,`Episode ${ep!.number} of ${total}`,s.lang.toUpperCase(),s.phase==='playing'||s.phase==='paused'?(s.quality||'720p'):''].filter(Boolean).join(' · '):'';
+  const where=has?[season,`Episode ${ep!.number} of ${total}`,s.lang.toUpperCase(),s.phase==='playing'||s.phase==='paused'?(s.subtitle||''):'',s.phase==='playing'||s.phase==='paused'?(s.quality||'720p'):''].filter(Boolean).join(' · '):'';
   const showBar=has&&!!s.duration&&['playing','paused','loading'].includes(s.phase);
   const progress=showBar?`${progressBar(s.position,s.duration)}  \`${clock(s.position)} / ${clock(s.duration!)}\``:'';
   const lines=[where,progress,[state,s.actualSource||''].filter(Boolean).join(' · '),s.owner?`Controls: <@${s.owner}>`:''].filter(Boolean);

@@ -17,8 +17,7 @@ export function matchingSources(original,candidates) {
     seen.add(key);return true;
   });
 }
-export async function inspectSources(original,candidates,list,{graceMs=0}={}) {
-  const items=matchingSources(original,candidates);
+export async function inspectCandidates(items,list,{graceMs=0}={}) {
   const tasks=items.map(async item=>{
     try {
       const episodes=await list(item.provider,item.id);
@@ -31,6 +30,9 @@ export async function inspectSources(original,candidates,list,{graceMs=0}={}) {
   // others get a short grace period; stragglers keep running and are cached for the Play step.
   const settled=await settleWithGrace(tasks,{graceMs,isGood:row=>row.status==='checked'});
   return settled.map((x,i)=>x.status==='fulfilled'?x.value:{provider:items[i].provider,media:items[i].id,status:'unavailable',episodes:[]});
+}
+export async function inspectSources(original,candidates,list,opts={}) {
+  return inspectCandidates(matchingSources(original,candidates),list,opts);
 }
 export function languageAvailability(rows,number,language) {
   const listed=[],unknown=[];

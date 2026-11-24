@@ -97,7 +97,7 @@ export async function resolveMegaPlayV2(provider,unitId,language,http){
       const target=new URL(extracted.file);
       if(target.protocol!=='https:'||target.username||target.password)throw new Error('Unsafe protocol');
       return [{sourceUrl:target.toString(),isHLS:/\.m3u8(?:$|[?#])/i.test(target.toString()) || /\/m3u8(?:$|[?#])/i.test(target.pathname),quality:'auto',language,
-        headers:{Referer:MP_HOST+'/'},subtitles:extracted.tracks.filter(t=>t?.kind==='captions'&&typeof t.file==='string'&&/^https:\/\//.test(t.file)).slice(0,15).map(t=>({url:t.file,label:String(t.label||'Subtitles').slice(0,60),language:String(t.label||'unknown').toLowerCase(),format:t.file.includes('.vtt')?'vtt':'srt'}))}];
+        headers:{Referer:MP_HOST+'/'},subtitles:extracted.tracks.filter(t=>(!t?.kind||/^(captions|subtitles?)$/i.test(String(t.kind)))&&typeof t.file==='string'&&/^https:\/\//.test(t.file)).slice(0,15).map(t=>({url:t.file,label:String(t.label||'Subtitles').slice(0,60),language:String(t.label||'unknown').toLowerCase(),format:t.file.includes('.vtt')?'vtt':'srt'}))}];
     }catch(e){errors.push(String(e?.message||'source format unavailable').slice(0,120))}
   }
   throw new Error('Video host source endpoints unavailable: '+errors.slice(0,3).join(' / '));

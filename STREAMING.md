@@ -219,3 +219,23 @@ The old log line `late total` was cumulative since playback start, so it kept gr
 * A source with **no audio track** now logs a warning and a `missing_audio` timeline event.
 * In that log the `phase=loading worker=streaming` lines (08:14:49, 08:15:49, 08:17:24, 08:18:19) are the bot's 5 s poll lagging behind the worker; v23's one-second follow-up poll closes that gap.
 * **Read-block** (`ffmpeg read-block 1.0–1.7 s / 10 s`) can come from CPU throttling *or* from a slow source download; this log cannot tell them apart. The v23 `[stats]` lines print throttled periods next to FFmpeg read wait, so the next log will.
+
+## v24 — which anime is this? (TV service v0.14.0)
+
+**What was wrong.** Provider searches carry no year or episode count, so "Hunter x Hunter" from a source could be the 1999 series (62 eps) or the 2011 one (148 eps). The old code matched by name, merged every hit into one list and, on Play, re-searched and tried *all* of them — so the 2011 series could play the 1999 one, and switching Sub↔Dub (which replays through the same queue) could jump versions.
+
+**How it works now** (`tv/src/identity.mjs`, `tv/src/resolve.mjs`):
+
+1. **One entity per real anime**, taken from the catalogue (AniList, Jikan fallback): id, year, format (TV/Movie/OVA/Special/ONA), status, episode total.
+2. **Provider hits attach to an entity only with evidence**, in this order: *id* (MegaPlay's media id **is** the AniList id) → *name + year* → *name* (nothing else in the results shares it) → *ambiguous* (remakes share the title). Hits that match nothing become their own entity; "Hunter x Hunter Movie: Phantom Rouge" is recognised as the catalogue's movie.
+3. **Ambiguous listings are decided by episode count** against each version's catalogue total (≥ 75 % fit and clearly better than the sibling). A listing with 62 episodes is the 1999 series and is *rejected* for 2011 (and vice versa). If the count fits neither it is refused ("cannot tell the versions apart"), never guessed.
+4. **Only verified listings feed the episode list and playback.** `/api/play` queues only verified sources that list the requested language for that episode number. If none does, it fails with `No verified source lists DUB for episode 5 of Hunter x Hunter (2011) (available: SUB)` and never falls back to another version. The bot checks the same thing before toggling Sub/Dub and changes nothing if the language is not listed.
+5. **Search is organised**: one row per anime, TV series first, then movies, then OVAs/specials; the year is added when two rows share a title ("Hunter x Hunter (2011)" / "(1999)"); each row says `TV · 2011 · 148 eps · 3 sources`. The season dropdown never treats two same-named TV rows as seasons, and movies/OVAs are "Special".
+
+**Debug output**
+* Logs: `Anime search "…": N catalogue titles, M source listings -> K entries`, then one line per top row (`Hunter x Hunter (2011) [TV 2011 148 eps]: megaplay(id), anikoto(ambiguous)`), `Source match: …`, and a **`Match report for "…"`** block with one `ACCEPT` / `REJECT` / `PENDING` line per provider listing and the reason (e.g. `REJECT anikoto "Hunter x Hunter" [ambiguous] 62 eps: 62 episodes fits "Hunter x Hunter (1999)" (62) better than 148`).
+* Timeline events `match_report`, `language_unavailable`, `subtitles`, `subtitles_failed`; `/api/diagnostics` has a bounded `matching` section; the bot's *Export diagnostics* includes it, and *Debug info* shows the latest match/subtitle lines.
+
+**Subtitles.** Each play now logs `Subtitles: burning English captions from <provider> (N track(s) offered)`, or — when a source has no English track — the exact list of tracks it offered, and the panel shows `SUB · EN subtitles` or `SUB · no subtitles`. English-track detection accepts labels like `English (CC)`, `English - Subs`, `[English]` and tracks whose kind is `subtitles` (not only `captions`). A real FFmpeg test confirms captions change the picture. Dub never burns subtitles (unchanged).
+
+**Not verified (no network from the build sandbox):** real provider answers. The listing counts above come from fixtures that mimic what your Railway log showed. Degraded mode: if both AniList and Jikan are down, there is no catalogue, so same-title remakes cannot be told apart by year and show up as separate rows only when a source writes the year in the title.
