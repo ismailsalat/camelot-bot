@@ -73,6 +73,8 @@ export function describeVideoError(stderr='',code=null,timedOut=false){
   if (timedOut)return 'Video source did not deliver a playable frame before the timeout.';
   return code===0?'Video frame decoded':'FFmpeg could not decode a frame from this online source.';
 }
+import {existsSync} from 'node:fs';
+const NICE=process.platform!=='win32'&&(existsSync('/usr/bin/nice')||existsSync('/bin/nice'));
 export async function preflightVideo(url, headers={}, timeoutMs=35000, {shouldStop=()=>false,isHLS=false,subtitlePath=null}={}) {
     const valid=validateMediaUrl(url);
     if(!valid)throw new Error('Invalid or non-HTTPS video source');
@@ -83,10 +85,13 @@ export async function preflightVideo(url, headers={}, timeoutMs=35000, {shouldSt
     if(shouldStop())throw new Error('Video check cancelled');
   return new Promise((resolve,reject)=>{
     // Decode a real video frame without storing the source content. No DRM bypass.
-    const args=['-nostdin','-hide_banner','-loglevel','error',
+    // One decoder thread and low priority: this check runs while another episode may still be streaming, and a
+    // second FFmpeg competing for the container's CPU quota is what made the live picture stutter during Next/switch.
+    const args=['-nostdin','-hide_banner','-loglevel','error','-threads','1',
       '-rw_timeout','15000000',...inputOptions,...ffmpegHeaderArgs(headers),'-i',valid,
       '-map','0:v:0',...subtitleArgs,'-frames:v','1','-an','-progress','pipe:1','-f','null','-'];
-    const child=spawn('ffmpeg',args,{stdio:['ignore','pipe','pipe']});
+    const niceAvailable=NICE;
+    const child=niceAvailable?spawn('nice',['-n','10','ffmpeg',...args],{stdio:['ignore','pipe','pipe']}):spawn('ffmpeg',args,{stdio:['ignore','pipe','pipe']});
     let progress='',decodedFrame=false;
     child.stdout.on('data',b=>{progress=(progress+b.toString()).slice(-4000);if (/(?:^|\n)frame=\s*[1-9]\d*/.test(progress))decodedFrame=true;});
     let stderr='';let done=false;let timedOut=false;let cancelled=false;

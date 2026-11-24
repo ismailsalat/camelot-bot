@@ -96,3 +96,26 @@ test('cancellation stops the search without trying more providers',async()=>{
     list:async()=>[],resolve:async()=>{resolved++;stop=true;return {}},rank:()=>stream('a'),probe:async()=>{},onSuccess:async()=>{},shouldStop:()=>stop}),/cancelled/i);
   assert.equal(resolved,1);
 });
+
+import {assertHostResolves,_clearHostCache} from '../src/hostcheck.mjs';
+test('a domain that no longer exists is reported once per few minutes instead of silently returning nothing',async()=>{
+  _clearHostCache();let calls=0,now=0;
+  const lookupFn=async()=>{calls++;throw Object.assign(new Error('x'),{code:'ENOTFOUND'})};
+  await assert.rejects(assertHostResolves('dead.example',{lookupFn,now:()=>now}),e=>classifyFailure(e)==='dns');
+  await assert.rejects(assertHostResolves('dead.example',{lookupFn,now:()=>now+1000}));
+  assert.equal(calls,1);                                   // cached
+  now+=130000;await assert.rejects(assertHostResolves('dead.example',{lookupFn,now:()=>now}));assert.equal(calls,2);
+  _clearHostCache();
+  await assertHostResolves('ok.example',{lookupFn:async()=>({address:'1.1.1.1'})});                     // resolves: no error
+  await assertHostResolves('flaky.example',{lookupFn:async()=>{throw Object.assign(new Error('t'),{code:'ETIMEOUT'})}});  // unclear: real request decides
+});
+
+test('every spelling sources really use for Hunter x Hunter (2011) matches, and the 1999 series and spin-offs never do',()=>{
+  const cat={title:'HUNTER×HUNTER (2011)',aliases:['Hunter x Hunter (2011)'],year:2011};
+  for(const ok of ['Hunter x Hunter (2011)','Hunter x Hunter 2011','Hunter x Hunter (TV)','Hunter x Hunter 2011 Dub','Hunter x Hunter 2011 (Dub)','HUNTER×HUNTER','Hunter X Hunter (Dub)'])
+    assert.equal(sameAnime(cat,{title:ok}),true,ok);
+  for(const no of ['Hunter x Hunter (1999)','Hunter x Hunter 1999','Hunter x Hunter Movie 1: Phantom Rouge','Hunter x Hunter OVA','Hunter x Hunter: Greed Island'])
+    assert.equal(sameAnime(cat,{title:no}),false,no);
+  assert.equal(sameAnime({title:'Mob Psycho 100'},{title:'Mob Psycho 100'}),true);
+  assert.equal(sameAnime({title:'Naruto'},{title:'Naruto Shippuden'}),false);
+});

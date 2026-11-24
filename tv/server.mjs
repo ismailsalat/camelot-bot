@@ -183,12 +183,13 @@ async function probeSource(source){
  const {ffmpegHeaderArgs}=await import('./src/source.mjs');
  const args=['-v','error','-rw_timeout','12000000',...await ffmpegInputOptions(source.isHLS),...ffmpegHeaderArgs(source.headers),'-i',source.url,'-show_entries','format=duration:stream=codec_type,height','-of','json'];
  return new Promise(resolve=>execFile('ffprobe',args,{timeout:15000,maxBuffer:200000},(error,stdout)=>{
-   if(error)return resolve({duration:null,height:0});
+   if(error)return resolve({duration:null,height:0,audio:null});
    try{
      const data=JSON.parse(stdout),value=Number(data.format?.duration);
      // A master playlist lists every quality, so the tallest video stream is the best the source offers.
      const height=Math.max(0,...(data.streams||[]).filter(s=>s.codec_type==='video').map(s=>Number(s.height)||0));
-     resolve({duration:Number.isFinite(value)&&value>0?value:null,height});
+     const audio=(data.streams||[]).some(s=>s.codec_type==='audio');
+     resolve({duration:Number.isFinite(value)&&value>0?value:null,height,audio});
    }catch{resolve({duration:null,height:0})}
  }));
 }
@@ -371,8 +372,9 @@ const server=http.createServer(async(req,res)=>{
          onProgress:msg=>log(/unavailable|failed|no video|HTTP|missing|timed out|Ambiguous/i.test(msg)?'warning':'info',msg),
          onSuccess:async(source,entry)=>{
            if(checkOnly){await discardPrepared(source);return;}
-           const {duration,height}=await probeSource(source);
+           const {duration,height,audio}=await probeSource(source);
            maxHeight=height;
+           if(audio===false){log('warning','This source reports no audio track; the stream may be silent. Trying another source with sound is recommended.');timeline.record('missing_audio',{cid,gen:generation,provider:entry?.provider})}
            // 1080p only when the source really has it; 720p is the default and the safe choice.
            const quality=b.quality==='1080p'&&height>=1000?'1080p':'720p';
            worker.quality=quality;worker.maxHeight=height;

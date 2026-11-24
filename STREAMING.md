@@ -209,3 +209,13 @@ The old log line `late total` was cumulative since playback start, so it kept gr
 
 ### Tests added
 `tv/tests/test_diag.py`, `tv/tests/health.test.mjs`, `src/test/stream-v23.test.ts`; `tests/pacing_bench.py --diag` runs the instrumented path.
+
+### v23.1 — from the 00:13–00:20 PT Railway log (it was the old build: TV v0.12.0)
+
+* **Title matching** now also accepts a bare year (`Hunter x Hunter 2011`), a `(TV)` label and a trailing `Dub`/`Sub`, and still rejects `1999`, movies, OVAs and spin-offs.
+* **Dead host `anikai.to`** (AnimeKai): the library swallowed the DNS error and returned "no results", so the registry never saw a failure. Extra providers now do a cached DNS check first (`src/hostcheck.mjs`); a dead domain becomes a `dns` failure, cools down, and stops logging the same error every search.
+* **Source check no longer competes with the live stream**: the one-frame FFmpeg check runs with one thread and `nice -n 10`. In the log, every Next/switch (08:15:45, 08:18:09–16) shows the playing stream dropping to 20–21 fps while the check ran.
+* **`hianime` hung for 12.7 s** (08:17:57 → 08:18:09) before animeparadise was tried; the per-provider limit is now 9 s and providers resolve in parallel.
+* A source with **no audio track** now logs a warning and a `missing_audio` timeline event.
+* In that log the `phase=loading worker=streaming` lines (08:14:49, 08:15:49, 08:17:24, 08:18:19) are the bot's 5 s poll lagging behind the worker; v23's one-second follow-up poll closes that gap.
+* **Read-block** (`ffmpeg read-block 1.0–1.7 s / 10 s`) can come from CPU throttling *or* from a slow source download; this log cannot tell them apart. The v23 `[stats]` lines print throttled periods next to FFmpeg read wait, so the next log will.

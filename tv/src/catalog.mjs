@@ -7,8 +7,9 @@ export function normTitle(v){
   return String(v||'').replace(/[×✕✖&＆∞☆★♥♡]/g,c=>CHAR_MAP[c]).normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
 }
 /** A "(2011)" style release year written in a title, or null. */
-export function titleYear(v){const m=String(v||'').match(/\((19[5-9]\d|20\d\d)\)/);return m?Number(m[1]):null}
-const stripYear=v=>String(v||'').replace(/\s*\((?:19[5-9]\d|20\d\d)\)/g,' ');
+export function titleYear(v){const s=String(v||'');const m=s.match(/\((19[5-9]\d|20\d\d)\)/)||s.match(/\s(19[5-9]\d|20\d\d)(?:\s*\((?:dub|sub|dubbed|english dub)\))?$/i);return m?Number(m[1]):null}
+// Sources write the year as "(2011)", as a bare "2011" at the end, or add a "(TV)" label; none of these is part of the name.
+const stripYear=v=>String(v||'').replace(/\s*\((?:19[5-9]\d|20\d\d)\)/g,' ').replace(/\s*\((?:tv|tv series|tv anime)\)/gi,' ').replace(/(\S)\s+(?:19[5-9]\d|20\d\d)\s*$/,'$1');
 /** Well-known short names people type. Expanding them lets the sources find the real title. */
 export const QUERY_ALIASES={hxh:'hunter x hunter',jjk:'jujutsu kaisen',aot:'attack on titan',snk:'shingeki no kyojin',mha:'my hero academia',bnha:'boku no hero academia',
   fmab:'fullmetal alchemist brotherhood',fma:'fullmetal alchemist',opm:'one punch man',dbz:'dragon ball z',dbs:'dragon ball super',dbgt:'dragon ball gt',kny:'kimetsu no yaiba',
@@ -24,7 +25,8 @@ export function sameAnime(catalog,hit){
   // A terminal audio marker is not a new season. Preserve all season/part numbers.
   // A "(2011)" release year is metadata, not part of the name: it is compared as a year below, so that
   // "Hunter x Hunter (2011)" finds "Hunter × Hunter" but never the 1999 series.
-  const normalize=v=>normTitle(stripYear(String(v||'').replace(/\s*\((?:english\s+)?(?:dub|sub|dubbed)\)\s*$/i,'')));
+  const dubTag=/\s*\((?:english\s+)?(?:dub|sub|dubbed)\)\s*$/i;
+  const normalize=v=>normTitle(stripYear(String(v||'').replace(dubTag,'').replace(/(\S)\s+(?:dub|dubbed|sub)\s*$/i,'$1')));
   const names=[catalog?.title,...(catalog?.aliases||[])].map(normalize).filter(Boolean);
   const candidates=[hit?.title,...(hit?.aliases||[])].map(normalize).filter(Boolean);
   if(!candidates.some(name=>names.includes(name)))return false;
