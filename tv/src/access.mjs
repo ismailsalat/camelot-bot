@@ -1,5 +1,5 @@
 import {timingSafeEqual} from 'node:crypto';
-const BRIDGE_ROUTES=new Set(['GET /api/state','GET /api/providers','GET /api/search','GET /api/episodes','POST /api/check','POST /api/play','POST /api/stop']);
+const BRIDGE_ROUTES=new Set(['GET /api/state','GET /api/providers','GET /api/search','GET /api/episodes','POST /api/check','POST /api/play','POST /api/stop','GET /api/diagnostics','POST /api/diagnostics']);
 function equal(a,b){const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y);}
 export function apiAccess(req,path,{cloud=false,adminKey='',bridgeKey=''}={}) {
   const auth=req.headers.authorization||'';

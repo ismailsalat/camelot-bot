@@ -1,15 +1,37 @@
 // Separate anime metadata from online playback providers. An anime title is NOT a playable stream.
 // No DRM circumvention, proxying, or misleading auto-generated episodes.
 const QUERY=`query ($search:String!) { Page(page:1,perPage:15) { media(search:$search,type:ANIME,sort:SEARCH_MATCH,isAdult:false) { id title { english romaji native } seasonYear episodes format coverImage { large } } } }`;
-export function normTitle(v){return String(v||'').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ')}
+// Characters that stand for letters or words in anime titles: "Hunter × Hunter", "Fate/Zero", "Tom & Jerry", "Re:Zero".
+const CHAR_MAP={'×':' x ','✕':' x ','✖':' x ','&':' and ','＆':' and ','∞':' infinity ','☆':' ','★':' ','♥':' ','♡':' '};
+export function normTitle(v){
+  return String(v||'').replace(/[×✕✖&＆∞☆★♥♡]/g,c=>CHAR_MAP[c]).normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
+/** A "(2011)" style release year written in a title, or null. */
+export function titleYear(v){const m=String(v||'').match(/\((19[5-9]\d|20\d\d)\)/);return m?Number(m[1]):null}
+const stripYear=v=>String(v||'').replace(/\s*\((?:19[5-9]\d|20\d\d)\)/g,' ');
+/** Well-known short names people type. Expanding them lets the sources find the real title. */
+export const QUERY_ALIASES={hxh:'hunter x hunter',jjk:'jujutsu kaisen',aot:'attack on titan',snk:'shingeki no kyojin',mha:'my hero academia',bnha:'boku no hero academia',
+  fmab:'fullmetal alchemist brotherhood',fma:'fullmetal alchemist',opm:'one punch man',dbz:'dragon ball z',dbs:'dragon ball super',dbgt:'dragon ball gt',kny:'kimetsu no yaiba',
+  csm:'chainsaw man',sao:'sword art online',tpn:'the promised neverland',hsdxd:'highschool dxd',nge:'neon genesis evangelion',jojo:'jojo bizarre adventure',
+  tensura:'that time i got reincarnated as a slime',rezero:'re zero',
+  spyxfamily:'spy x family'};
+export function expandQuery(q){
+  const key=normTitle(q).replace(/ /g,'');
+  const direct=QUERY_ALIASES[normTitle(q)]||QUERY_ALIASES[key];
+  return direct&&normTitle(direct)!==normTitle(q)?direct:String(q||'').trim();
+}
 export function sameAnime(catalog,hit){
   // A terminal audio marker is not a new season. Preserve all season/part numbers.
-  const normalize=v=>normTitle(String(v||'').replace(/\s*\((?:english\s+)?(?:dub|sub|dubbed)\)\s*$/i,''));
+  // A "(2011)" release year is metadata, not part of the name: it is compared as a year below, so that
+  // "Hunter x Hunter (2011)" finds "Hunter × Hunter" but never the 1999 series.
+  const normalize=v=>normTitle(stripYear(String(v||'').replace(/\s*\((?:english\s+)?(?:dub|sub|dubbed)\)\s*$/i,'')));
   const names=[catalog?.title,...(catalog?.aliases||[])].map(normalize).filter(Boolean);
   const candidates=[hit?.title,...(hit?.aliases||[])].map(normalize).filter(Boolean);
   if(!candidates.some(name=>names.includes(name)))return false;
+  const years=x=>[Number(x?.year),titleYear(x?.title),...(x?.aliases||[]).map(titleYear)].filter(y=>y>0);
+  const a=years(catalog),b=years(hit);
   // Reject different-year adaptations/seasons when both releases are known.
-  return !(Number(catalog.year)>0 && Number(hit.year)>0 && Math.abs(Number(catalog.year)-Number(hit.year))>1);
+  return !(a.length&&b.length&&!a.some(x=>b.some(y=>Math.abs(x-y)<=1)));
 }
 function safeItems(items){
  const seen=new Set();return items.filter(Boolean).map(x=>({

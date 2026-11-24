@@ -53,9 +53,10 @@ class X264TuningTests(unittest.TestCase):
         src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
         start = src.index("X264_PRESETS=")
         end = src.index("_original_ffmpeg_cmd=")
-        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging')}
+        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging'), 'diag': __import__('diag'), 'ENCODER': {}}
         exec(src[start:end], ns)
         os.environ['STREAM_X264_PRESET'] = 'veryfast'
+        os.environ['STREAM_FFMPEG_THREADS'] = '4'
         try:
             cmd = ['ffmpeg', '-i', 'in.m3u8', '-vf', 'subs.ass,scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
             ns['_tune_x264'](cmd)
@@ -74,6 +75,7 @@ class X264TuningTests(unittest.TestCase):
             self.assertEqual(c2[c2.index('-preset') + 1], 'ultrafast')
         finally:
             os.environ.pop('STREAM_X264_PRESET', None)
+            os.environ.pop('STREAM_FFMPEG_THREADS', None)
 
 
 class EnvCleanTests(unittest.TestCase):
@@ -108,7 +110,7 @@ class QualityTests(unittest.TestCase):
     def _scale(self, quality):
         import os
         src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
-        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging')}
+        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging'), 'diag': __import__('diag'), 'ENCODER': {}}
         exec(src[src.index("X264_PRESETS="):src.index("_original_ffmpeg_cmd=")], ns)
         ns['QUALITY']['p'] = quality
         cmd = ['ffmpeg', '-i', 'in', '-vf', 'subtitles=x.ass,scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
@@ -125,7 +127,7 @@ class SlowPresetTests(unittest.TestCase):
         if allow is None: os.environ.pop('STREAM_ALLOW_SLOW_PRESET', None)
         else: os.environ['STREAM_ALLOW_SLOW_PRESET'] = allow
         src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
-        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging')}
+        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging'), 'diag': __import__('diag'), 'ENCODER': {}}
         exec(src[src.index("X264_PRESETS="):src.index("_original_ffmpeg_cmd=")], ns)
         cmd = ['ffmpeg', '-i', 'in', '-c:v', 'libx264', '-preset', 'superfast']
         ns['_tune_x264'](cmd)
@@ -139,7 +141,7 @@ class SingleSliceTests(unittest.TestCase):
     def test_x264_is_forced_to_one_slice_per_picture(self):
         import os
         src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
-        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging')}
+        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging'), 'diag': __import__('diag'), 'ENCODER': {}}
         exec(src[src.index("X264_PRESETS="):src.index("_original_ffmpeg_cmd=")], ns)
         cmd = ['ffmpeg', '-i', 'in', '-vf', 'scale=1280:720', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
                '-x264-params', 'aud=1']

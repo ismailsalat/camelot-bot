@@ -32,7 +32,7 @@ try{
  // The stub kills itself with SIGKILL when asked to stop; the pending request must fail cleanly.
  const stopped=await post('/api/stop');assert(!stopped.ok);
  for(let n=0;n<40;n++){if(/signal SIGKILL/.test(output))break;await sleep(100)}
- assert.match(output,/Streamer stopped \(exit code none, signal SIGKILL\)/);
+ assert.match(output,/Streamer process ended: reason=killed_by_SIGKILL initiated_by=worker .*signal=SIGKILL intentional=false/);
  assert.match(output,/worker: some worker output before the crash/);
  assert.match(output,/Container memory limit:/);
  assert.match(output,/Safe mode on/);

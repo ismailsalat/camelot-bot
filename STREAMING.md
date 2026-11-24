@@ -155,3 +155,57 @@ The 11 added tests cover actual text routing, module/voice restrictions, busy-se
 - **Seasons** come from the titles in the same search (`seasons.ts`): grouped by title, ordered by stated number / year, with movies and specials marked. No extra network requests, so playback is not disturbed.
 - **Quality:** 720p30 is the default. When the source really has 1080p (checked with ffprobe), an **Use 1080p** button appears; pressing it swaps the video on the live connection at the same position (no reconnect). The choice resets to 720p for a new anime and falls back to 720p if an episode has no 1080p. 1080p needs more CPU; if it stutters on your Railway plan press **Use 720p**.
 - **Smoothness:** packet pacing 0.7, 720p bitrate cap 3500k (1080p 6000k), rate-control buffer 40% of the bitrate.
+
+## v23 — measured stutter cause, diagnostics, provider health, HxH fix
+
+### What was confirmed (measured here) and what was not
+
+| Question | Result |
+| --- | --- |
+| Is the ffmpeg reader (`read(65536)`) causing bursts? | **No.** Reads are short (avg ~61 KB, 97% "short") but the pipe never runs dry; replacing the reader changed nothing measurable. |
+| Does bigger pipe / cheaper scaler fix it? | **No.** `STREAM_PIPE_KB` is now off by default; the scaler flag made no difference. |
+| What does cause the freezes? | **More FFmpeg threads than the container's CPU quota.** FFmpeg burns the whole 100 ms quota in a burst, then the kernel freezes it until the next period. |
+| Does "four threads" mean four CPUs? | **No.** Railway gives a CPU *quota*; `nproc` shows the host. |
+
+Real `H264VideoPlayer` + the worker's real FFmpeg command, 1080p source → 720p24, 3500k, `superfast`, 25 s, under a Linux CFS quota (`tests/pacing_bench.py`, `/tmp/bench/quota.sh`). "Frozen" = non-overlapping time beyond 1.5 frame intervals:
+
+| CPU quota | threads | picture frozen | gaps > 100 ms | kernel throttled |
+| --- | --- | --- | --- | --- |
+| 1.0 core | 4 (old default) | 0.07 % | 0 | 19 periods / 1.0 s |
+| 1.0 core | 1 | 0.00 % | 0 | 0 |
+| 0.5 core | 4 (old default) | **14.8 %** (2.8 s) | 17 | 181 periods / 17.0 s |
+| 0.5 core | 1 | 1.6 % (0.3 s) | 0 | 158 periods / 5.7 s |
+
+This is *this sandbox*, not your Railway plan. It shows the mechanism and that the fix goes the right way; the size of the effect on Railway depends on your plan's quota. The worker now picks threads from the detected quota (`auto`, max 4) and prints which quota it saw. Set `STREAM_FFMPEG_THREADS` only to override.
+
+The old log line `late total` was cumulative since playback start, so it kept growing after a single burst and looked like constant lateness. It is no longer used for judging smoothness; the new summaries use non-overlapping frozen time.
+
+**Not measured:** your real Railway quota, cold/warm start on Railway, a 10-minute run on Railway, receiver-side playback (nothing in this code can see what Discord clients display — "sent" always means handed to the network).
+
+### Recommended Railway variables
+
+* Delete `STREAM_X264_PRESET` and `STREAM_VIDEO_BITRATE` (the worker already caps 6000k→3500k and holds the preset at `superfast`; the "Stream settings" log line printed your *requested* values, which looked misleading).
+* Delete `STREAM_FFMPEG_THREADS` to use the quota-based default, or set it to the number of vCPUs your plan really gives.
+* If the picture still freezes: `STREAM_MAX_HEIGHT=540`, or `STREAM_FPS=20`.
+
+### Diagnostics
+
+* **Correlation id (`cid`)** is created by the bot per play, sent to the TV service, and forwarded to the worker. Every record carries `cid`, `gen`, UTC time, and a monotonic offset of its own process. Durations are only computed inside one process; cross-process numbers are composed from those.
+* **Timeline events**: bot — `interaction_received/acked`, `play_requested`, `panel_loading_painted`, `play_acked`, `phase_*`; TV — `play_request`, `resolve_start`, provider events (`provider_resolve_start/done`, `validate_start/done`, `provider_failed` with class), `worker_play_sent`, `play_ack`, `stop_request`, `worker_process_exit`; worker — `play_received`, `encoder` (effective settings), `go_live_ready`, `first_video_sent`, `first_audio_sent`, `media_stopped`, `go_live_closed`, `stats`.
+* **Summaries** (`[stats]` lines, every 10 s; every 1 s for 5 minutes after *Settings → Streaming → Detailed stats*): video fps target vs sent, frozen time/stalls/longest, gaps over 25/50/100/250/1000 ms past one frame, skipped frames by reason, FFmpeg read wait, short reads, queued video, RTP timestamp regressions; audio packets, PCM waits/short reads/underruns; CPU quota, container CPU, throttled periods, memory/OOM. Anything not observable (dropped/duplicated frames, encoder speed, queued audio) is `null`, never guessed.
+* **Failures explain themselves**: `reason`, `initiated_by`, `exit_code`, `signal`, `intentional`, last state, cleanup — e.g. `Streamer process ended: reason=killed_by_SIGKILL initiated_by=worker … intentional=false`. Worker `failed` events carry `ffmpeg_exit_N`, `ffmpeg_ended_early`, `audio_sender_stopped`, `video_start_timeout`, `kicked`.
+* **Bot "loading" vs worker "streaming"**: every phase change logs `phase a -> b worker=…`; a poll that finds the worker streaming while the panel says loading is logged. After each Play the bot now polls every second (max 25 times) instead of waiting for the 5 s tick.
+* **Log severity** is preserved (`[error]`→ERROR, `[warning]`→WARN); the worker's own timestamp is stripped from relayed lines.
+* **Admin export**: *Settings → Streaming → Export diagnostics* attaches one JSON file (bot timeline + TV timeline + provider health + build info + event-loop delay + container throttling). It contains no tokens, URLs, headers or ffmpeg arguments.
+* Local file `…/camelot-tv/timeline.jsonl` (override `CAMELOT_TIMELINE_FILE`) is size-capped at ~1.5 MB with one rotation.
+
+### Providers
+
+* **Hunter × Hunter**: the catalogue spells it `×` and the sources write `x` and add `(2011)`; `sameAnime` rejected all of them. Fixed (`normTitle`, year-aware matching: 2011 never matches 1999). `hxh`, `jjk`, `aot`, `mha`, … now expand to full names. The season dropdown no longer shows 1999/2011 as Season 1/2.
+* **Concurrent resolution**: up to 3 providers at once, 9 s per-provider limit, health-ordered; a provider that is still stuck after another one won is still recorded.
+* **Health registry** (`tv/src/health.mjs`): per-provider successes/failures, classified (`dns`, `timeout`, `http_error`, `rate_limit`, `parser`, `wrong_title`, `unavailable_episode`, `expired_url`, `manifest`, `segment`, `decode`, `missing_audio`, `cancelled`), cooldown (3 provider-level failures in a row → 2 min, doubling to 15 min). A wrong title or unaired episode never triggers a cooldown. Search also uses it, so a dead host (e.g. `ENOTFOUND`) stops costing a timeout on every search. Nothing is ever removed: if everything is cooling down, everything is tried.
+* **Reference repos** (licenses read from their GitHub pages today): `Anihub-Api` — **no license shown, so no code may be copied**; useful only as a list of site names (it mentions Reanime, AnimeGG, AniZone, AniWaves, Anibd, Kickassanime, AnimeDunya, AnimeOnsen; DASH for AnimeOnsen; embeds for AniWaves). `anime-extensions` — Apache-2.0 (Kotlin extensions). `anime-sdk` — MIT (already used). `ani-cli` — GPL-3.0 (do not copy into this project).
+* **No new adapters were added.** None of the eight candidates could be reached from the build sandbox, and the spec says to expand only after testing. Run the self-test on Railway: `railway ssh -- node tv/scripts/provider-selftest.mjs` (or paste the command in the service shell). It prints a table and JSON with time, title/episode/language, resolve time, media format, whether FFmpeg decoded a real video frame, and the failure class. Send me that output and I will add only what passes.
+
+### Tests added
+`tv/tests/test_diag.py`, `tv/tests/health.test.mjs`, `src/test/stream-v23.test.ts`; `tests/pacing_bench.py --diag` runs the instrumented path.

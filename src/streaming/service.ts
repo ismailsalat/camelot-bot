@@ -7,6 +7,7 @@ import {NO_MENTIONS} from '../util/mentions.js';
 import {V2_FLAGS,V2_PUBLIC} from '../core/ui.js';
 import {log} from '../logger.js';
 import {Bridge,type WorkerState} from './bridge.js';
+import {botTimeline} from './timeline.js';
 import {addToQueue,hasPanelControls,queueView,removeFromQueue,takeNext} from './queue.js';
 import {Gate,boundedPosition,clock,seconds,type Session,type Title} from './model.js';
 import {withFamily} from './seasons.js';
@@ -61,6 +62,14 @@ export class Streaming {
     return ch?.type===ChannelType.GuildVoice?ch:null;
   }
   private persist(){if(this.session)saveSession(this.session)}
+  /** One line per phase change with what the worker was doing at that moment, so "panel says loading, worker says streaming" is visible. */
+  private lastWorkerStatus='unknown';
+  private noteTransition(s:Session){
+    if(s.phase===this.loggedPhase)return;
+    const from=this.loggedPhase||'-';this.loggedPhase=s.phase;
+    botTimeline.mark('phase_'+s.phase,{cid:this.cid,from,worker:this.lastWorkerStatus});
+    log.info(`[stream] phase ${from} -> ${s.phase} worker=${this.lastWorkerStatus} cid=${this.cid??'-'} episode=${s.episodes[s.episode]?.number??'-'} note=${(s.note||'').replace(/https?:\/\/\S+/g,'[link]').slice(0,80)}`);
+  }
   private async paint(strict=false){
     this.paintPending=true;
     if(!this.paintTask){
@@ -73,6 +82,7 @@ export class Streaming {
     while(this.paintPending&&this.session){
       this.paintPending=false;
       const s=this.session,version=this.bumpVersion;
+      this.noteTransition(s);
       try{
         const ch=await this.channel();if(!ch)throw new Error('Voice channel unavailable.');
         let old=null;
@@ -186,15 +196,18 @@ export class Streaming {
     s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
     s.source='auto';s.actualSource=undefined;s.hd=false;s.quality='720p';s.epPage=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
   }
-  private async play(position=0){await this.playback(()=>this.startEpisode(position))}
+  private async play(position=0,initiator:'user'|'auto'|'recovery'|'queue'='user'){this.initiator=initiator;try{await this.playback(()=>this.startEpisode(position))}finally{this.initiator='user'}}
   private async startEpisode(position:number){
     const s=this.session!,ep=s.episodes[s.episode];
     if(!s.title||!ep)throw new Error('Choose an anime first.');
     s.phase='loading';s.note='Finding a working source…';s.position=position;s.changed=Date.now();await this.paint();
+    botTimeline.mark('panel_loading_painted',{cid:this.cid});
     await this.prepare();
     // The episode list was loaded when the anime was picked, so play it straight away; asking the TV
     // service for it again re-inspected every source (~4 s). A restarted service is handled by the retry below.
-    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position};
+    const cid=`${s.id.slice(0,4)}-${++this.playCounter}`;this.cid=cid;
+    botTimeline.mark('play_requested',{cid,episode:ep.number,lang:s.lang,source:s.source,quality:s.quality||'720p',initiated_by:this.initiator});
+    const playRequest={cid,initiatedBy:this.initiator,guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position};
     let result:any;
     try{result=await this.bridge.call('/api/play',playRequest)}
     catch(error){
@@ -210,7 +223,9 @@ export class Streaming {
       if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
       result=await this.bridge.call('/api/play',{...playRequest,unit:chosen.id});
     }
+    botTimeline.mark('play_acked',{cid,provider:result.provider,quality:result.streamQuality});
     s.actualSource=result.provider;s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
+    this.followUp();
   }
   private async release(note='Available. Use /stream to take a turn.'){
     const s=this.session;if(!s)return;
@@ -261,6 +276,8 @@ export class Streaming {
           if(this.bump||this.dirty||!s.message)await this.paint();return;
         }
         const w=await this.bridge.call<WorkerState>('/api/state');this.streamerId=w.streamerId;
+        if(w.status!==this.lastWorkerStatus){log.info(`[stream] worker ${this.lastWorkerStatus} -> ${w.status}${w.failReason?` (${w.failReason})`:''} phase=${s.phase} cid=${this.cid??'-'}`);this.lastWorkerStatus=w.status}
+        if(s.phase==='loading'&&w.status==='streaming')log.info(`[stream] worker is streaming while the panel still says loading (changing to playing) cid=${this.cid??'-'}`);
         if(Date.now()-this.lastStatusLog>=30000){
           this.lastStatusLog=Date.now();
           log.info(`[stream] phase=${s.phase} worker=${w.status} episode=${s.episodes[s.episode]?.number??'-'} position=${Math.round(w.position||0)}s source=${s.actualSource||'-'} retries=${this.retries} queue=${s.queue?.length??0} rejoin=${this.rejoinWanted} safeMode=${w.safeMode??false}${w.failReason?` failReason=${w.failReason}`:''}`);
@@ -274,7 +291,7 @@ export class Streaming {
         }else if(w.status==='paused'){s.phase='paused';s.position=w.position;}
         else if(w.status==='ended'){
           if(s.episode>=s.episodes.length-1&&await this.advanceQueue(s))return;
-          if(settings.autoNext&&s.episode<s.episodes.length-1){s.episode++;s.duration=null;s.position=0;await this.play();}
+          if(settings.autoNext&&s.episode<s.episodes.length-1){s.episode++;s.duration=null;s.position=0;await this.play(0,'auto');}
           else await this.release('Finished. Streaming is available.');
           return;
         }else if(['offline','failed'].includes(w.status)){await this.recoverLocked();return}
@@ -288,6 +305,22 @@ export class Streaming {
     }finally{this.polling=false}
   }
   private streamerId?:string;
+  private playCounter=0;
+  private cid:string|undefined;
+  private initiator:'user'|'auto'|'recovery'|'queue'='user';
+  private loggedPhase='';
+  private followUps=0;
+  /** After a play request the worker needs a few seconds to show its first frame; poll every second until the panel
+   *  can say "playing", instead of waiting for the regular 5 s tick. Bounded to 25 checks per play. */
+  private followUp(){
+    this.followUps=25;
+    const step=()=>{
+      const s=this.session;
+      if(this.closed||this.stopping||!s||s.phase!=='loading'||this.followUps--<=0)return;
+      void this.tick().finally(()=>{const t=setTimeout(step,1000);t.unref()});
+    };
+    const t=setTimeout(step,1000);t.unref();
+  }
   private markKicked(resumeAt:number|null){
     this.rejoinWanted=true;this.rejoinAt=resumeAt;this.lastRejoin=0;
     log.warn('Camelot was removed from the voice channel; rejoining until Stop is pressed.');
@@ -299,7 +332,7 @@ export class Streaming {
     const at=this.rejoinAt;
     s.note='Camelot was removed from the voice channel. Coming back…';
     try{
-      if(at!==null&&s.title&&s.episodes[s.episode]){s.phase='loading';await this.paint();await this.startEpisode(at)}
+      if(at!==null&&s.title&&s.episodes[s.episode]){s.phase='loading';await this.paint();this.initiator='recovery';try{await this.startEpisode(at)}finally{this.initiator='user'}}
       else{
         await this.paint();await this.prepare();await this.bridge.call('/api/standby',{channel:s.channel});
         s.note=s.title?'Ready. Press Play.':'';
@@ -348,7 +381,7 @@ export class Streaming {
       // A background poll may hold the gate for a moment; wait for it rather than dropping the start.
       for(let attempt=0;attempt<10&&valid();attempt++){
         await this.gate.idle();
-        try{await this.gate.run(async()=>{if(valid()){this.retries=0;await this.play(0)}});return}
+        try{await this.gate.run(async()=>{if(valid()){this.retries=0;await this.play(0,'auto')}});return}
         catch(error){if(!(error instanceof Error)||!error.message.startsWith('One moment'))throw error}
       }
     }catch(error){
@@ -358,7 +391,7 @@ export class Streaming {
   }
   private async recoverLocked(){
     if(this.retries++>=2){await this.fail(new Error('Playback keeps failing. Choose another source or press Play.'));return}
-    const s=this.session!;s.source='auto';s.note='Reconnecting…';await this.play(s.position);
+    const s=this.session!;s.source='auto';s.note='Reconnecting…';await this.play(s.position,'recovery');
   }
   async open(member:GuildMember){
     if(this.closed||this.stopping)throw new Error('Streaming is stopping. Try again in a moment.');
@@ -399,6 +432,7 @@ export class Streaming {
     const custom=('customId' in i)?i.customId:'';
     if(!command&&!custom.startsWith('tv:')&&!custom.startsWith('tvs:')&&!custom.startsWith('tvr:'))return false;
     if(!i.isRepliable())return true;
+    const received=botTimeline.mark('interaction_received',{cid:this.cid,kind:command?'command':custom.split(':')[2]||custom,age_ms:Math.max(0,Date.now()-i.createdTimestamp)});
     const reply=async(content:string)=>{const payload={content,components:[],allowedMentions:NO_MENTIONS};if(i.deferred||i.replied)await i.editReply(payload);else await i.reply({...payload,flags:MessageFlags.Ephemeral})};
     try{
       if(!i.inCachedGuild()){await reply('Use this in the server.');return true}
@@ -441,6 +475,7 @@ export class Streaming {
       }
       if((i.isButton()||i.isStringSelectMenu())&&['qskip','qclear','qdel','qpick'].includes(op||''))await i.deferUpdate();
       else await i.deferReply({flags:MessageFlags.Ephemeral});
+      botTimeline.mark('interaction_acked',{cid:this.cid,kind:op});
       if(op==='stop'||op==='release'){
         this.autoToken++;
         if(this.session!==s)throw new Error('Session changed. Use /stream again.');
@@ -546,6 +581,8 @@ export class Streaming {
     }
     await i.deferReply({flags:MessageFlags.Ephemeral});
     if(op==='toggle'){setByPath(member.guild.id,'modules.streaming',!getSettings(member.guild.id).modules.streaming);await i.editReply({components:[settingsCard(member)],flags:V2_PUBLIC,allowedMentions:NO_MENTIONS});return}
+    if(op==='export'){await i.editReply({content:'Streaming diagnostics (no tokens, links or headers). Share this file when reporting a problem.',files:[await this.diagnosticsFile()],allowedMentions:NO_MENTIONS});return}
+    if(op==='debugmode'){if(this.bridge.running)await this.bridge.call('/api/diagnostics',{debugSeconds:300});await i.editReply({content:this.bridge.running?'Detailed streaming statistics are on for 5 minutes (once per second in the Railway logs, then back to every 10 seconds).':'Streaming is not running. Start a stream first, then turn this on.',components:[],allowedMentions:NO_MENTIONS});return}
     if(op==='debug'){await i.editReply({content:await this.debugReport(),components:[],allowedMentions:NO_MENTIONS});return}
     if(op==='check'){
       if(this.session?.owner)throw new Error('Stop the active stream before checking the account.');
@@ -563,6 +600,16 @@ export class Streaming {
       if(this.session?.owner)throw new Error('Release the active session first.');await this.gate.run(async()=>{clearToken(member.guild.id);await this.bridge.close()});
     }else if(op==='auto')setByPath(member.guild.id,'streaming.autoNext',!getSettings(member.guild.id).streaming.autoNext);
     await i.editReply({components:[settingsCard(member)],flags:V2_PUBLIC,allowedMentions:NO_MENTIONS});
+  }
+  /** Redacted JSON export for admins: bot timeline + the TV service's own export. Never contains tokens, media links or headers. */
+  async diagnosticsFile():Promise<AttachmentBuilder>{
+    const tv=this.bridge.running?await this.bridge.call('/api/diagnostics'+(this.cid?'?cid='+encodeURIComponent(this.cid):'')).catch((e:Error)=>({error:'TV diagnostics unavailable: '+e.message.slice(0,120)})):{error:'TV service is not running'};
+    const s=this.session;
+    const bot={generatedAt:new Date().toISOString(),node:process.version,commit:(process.env.RAILWAY_GIT_COMMIT_SHA||'').slice(0,12)||null,cid:this.cid??null,
+      session:s?{phase:s.phase,episode:s.episodes[s.episode]?.number??null,source:s.actualSource||s.source,lang:s.lang,quality:s.quality,queue:s.queue?.length??0,rejoinWanted:this.rejoinWanted,lastWorkerStatus:this.lastWorkerStatus}:null,
+      summary:this.cid?botTimeline.summary(this.cid):null,timeline:botTimeline.all().slice(-300)};
+    const text=JSON.stringify({bot,tv},null,1).replace(/https?:\/\/[^\s"\\]+/g,'[url]');
+    return new AttachmentBuilder(Buffer.from(text,'utf8'),{name:`camelot-streaming-diagnostics-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`});
   }
   /** Plain-text status for admins (Settings → Streaming → Debug info). Never includes tokens or media links. */
   async debugReport():Promise<string>{

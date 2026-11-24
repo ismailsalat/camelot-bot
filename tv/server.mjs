@@ -8,13 +8,19 @@ import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {getProviders,searchCatalog,listEpisodes,resolveEpisode} from './src/sdk.mjs';
 import {rankedStreams,preflightVideo} from './src/source.mjs';
-import {searchAnimeCatalog,sameAnime} from './src/catalog.mjs';
+import {searchAnimeCatalog,sameAnime,expandQuery} from './src/catalog.mjs';
 import {candidatePlan,tryPlayableEpisode} from './src/playback.mjs';
 import {inspectSources,episodeMenu,matchingSources} from './src/availability.mjs';
 import {prepareCaptions,discardCaptions,SUBTITLE_CHOICES} from './src/subtitles.mjs';
 import {apiAccess,originAllowed} from './src/access.mjs';
+import {Timeline,redactText,redactArgs} from './src/timeline.mjs';
+import {health} from './src/health.mjs';
+import {monitorEventLoopDelay} from 'node:perf_hooks';
+import {execFileSync} from 'node:child_process';
+import {randomBytes} from 'node:crypto';
+import os from 'node:os';
 
-const VERSION='0.12.0';
+const VERSION='0.13.0';
 const DIR=resolve(fileURLToPath(new URL('.',import.meta.url)));
 const INTERNAL=process.env.CAMELOT_INTERNAL==='1';
 const CLOUD=!INTERNAL&&Boolean(process.env.RAILWAY_ENVIRONMENT||process.env.CAMELOT_BIND_ALL);
@@ -31,6 +37,13 @@ function retireCaptions(source){if(source)setTimeout(()=>{if(source!==activeCapt
 if(CLOUD && ADMIN_KEY.length<20){console.error('CAMELOT_ADMIN_KEY must be at least 20 characters for a cloud deployment. Refusing to expose controls.');process.exit(2)}
 if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw new Error('Invalid PORT');
 const logs=[];
+const timeline=new Timeline({origin:'tv',file:process.env.CAMELOT_TIMELINE_FILE||join(os.tmpdir(),'camelot-tv','timeline.jsonl')});
+const loopDelay=monitorEventLoopDelay({resolution:20});loopDelay.enable();
+const newCid=()=>'s'+randomBytes(4).toString('hex');
+const cidOf=value=>/^[A-Za-z0-9_-]{3,40}$/.test(String(value||''))?String(value):newCid();
+let currentCid=null;
+const BUILD={commit:(process.env.RAILWAY_GIT_COMMIT_SHA||process.env.SOURCE_COMMIT||'').slice(0,12)||null,node:process.version,tv:VERSION,ffmpeg:null,python:null};
+for(const [key,cmd,args] of [['ffmpeg','ffmpeg',['-version']]]){try{BUILD[key]=execFileSync(cmd,args,{timeout:3000,encoding:'utf8'}).split('\n')[0].replace(/^ffmpeg version\s+/,'').slice(0,40)}catch{}}
 let lastError='';
 const scrub=text=>{
   let msg=String(text||'').replace(/https?:\/\/[^\s<>"']+/g,'[media URL redacted]');
@@ -74,8 +87,8 @@ function workerStart(token,guild){
     //   STREAM_X264_PRESET=veryfast|faster                         (better quality per bit, more CPU)
     STREAM_RESOLUTION:cleanEnv.STREAM_RESOLUTION||'1280:720',STREAM_FPS:cleanEnv.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:cleanEnv.STREAM_VIDEO_BITRATE||'6000k',STREAM_X264_PRESET:cleanEnv.STREAM_X264_PRESET||'superfast'};
   if(safeMode)Object.assign(childEnv,{STREAM_RESOLUTION:'1280:720',STREAM_FPS:'30',STREAM_VIDEO_BITRATE:'4500k',STREAM_X264_PRESET:'superfast',STREAM_FFMPEG_THREADS:'3'});
-  streamConfig={resolution:childEnv.STREAM_RESOLUTION,fps:childEnv.STREAM_FPS,bitrate:childEnv.STREAM_VIDEO_BITRATE,preset:childEnv.STREAM_X264_PRESET,threads:childEnv.STREAM_FFMPEG_THREADS||'4',safeMode};
-  log('info',`Stream settings: ${childEnv.STREAM_RESOLUTION} at ${childEnv.STREAM_FPS} fps, ${childEnv.STREAM_VIDEO_BITRATE}, x264 ${childEnv.STREAM_X264_PRESET}, ${childEnv.STREAM_FFMPEG_THREADS||'4'} threads${safeMode?' (safe mode)':''}`);
+  streamConfig={resolution:childEnv.STREAM_RESOLUTION,fps:childEnv.STREAM_FPS,bitrate:childEnv.STREAM_VIDEO_BITRATE,preset:childEnv.STREAM_X264_PRESET,threads:childEnv.STREAM_FFMPEG_THREADS||'auto',safeMode};
+  log('info',`Stream settings: ${childEnv.STREAM_RESOLUTION} at ${childEnv.STREAM_FPS} fps, ${childEnv.STREAM_VIDEO_BITRATE}, x264 ${childEnv.STREAM_X264_PRESET}, ${childEnv.STREAM_FFMPEG_THREADS||'auto'} threads (requested; the worker logs the effective encoder settings)${safeMode?' (safe mode)':''}`);
   delete childEnv.CAMELOT_STREAMER_TOKEN;delete childEnv.CAMELOT_ADMIN_KEY;delete childEnv.CAMELOT_BRIDGE_KEY;
   const child=spawn(python,['-u',join(DIR,'runtime','camelot_worker.py')],{
     cwd:join(DIR,'runtime'),
@@ -88,7 +101,12 @@ function workerStart(token,guild){
   child.on('close',(code,signal)=>{
     const abnormal=Boolean(signal)||(code!==null&&code!==0);
     const wasReady=worker.ready;
-    log('info',`Streamer stopped (exit code ${code??'none'}${signal?`, signal ${signal}`:''})`);
+    const intentional=worker.quitRequested===true;
+    const stopInfo={reason:intentional?'quit_requested':abnormal?(signal?`killed_by_${signal}`:'worker_crashed'):'worker_exited',initiated_by:intentional?(worker.quitBy||'admin'):'worker',exit_code:code,signal:signal||null,intentional,cid:currentCid,
+      last_state:worker.status,was_ready:wasReady,cleanup:'commands_closed,captions_retired,state_reset'};
+    timeline.record('worker_process_exit',stopInfo);
+    log(abnormal?'error':'info',`Streamer process ended: ${Object.entries(stopInfo).filter(([,v])=>v!==null&&v!==undefined).map(([k,v])=>`${k}=${v}`).join(' ')}`);
+    worker.quitRequested=false;
     if(worker.child!==child)return;
     if(abnormal){
       for(const line of workerTail.slice(-12))log('error','worker: '+line);
@@ -114,12 +132,32 @@ function lastFfmpegProblem(){
   for(let i=workerTail.length-1;i>=0;i--){const l=workerTail[i];if(/ffmpeg video:|ffmpeg audio:|Unknown encoder|Error while opening|Invalid|No such file|Connection refused|Server returned|produced no output/i.test(l))return l.replace(/^.*?(WARNING|ERROR)\s+/,'').slice(0,220)}
   return '';
 }
+/** Worker events that only feed the timeline (they never change playback state). */
+function workerEvent(e){
+  const {event,...rest}=e;
+  if(event==='stats'){
+    const {text,...numbers}=rest;
+    timeline.record('worker_stats',{cid:rest.cid||currentCid,...numbers});
+    if(text)console.log('[stats] '+scrub(text).slice(0,300));
+    return;
+  }
+  if(event==='build'){BUILD.python=rest.python||null;BUILD.workerCpuQuota=rest.cpu_quota_cores??null;timeline.record('worker_build',rest);return}
+  if(['play_received','go_live_ready','first_video_sent','first_audio_sent','encoder','media_stopped','go_live_closed','go_live_connected','diag'].includes(event)){
+    timeline.record('worker_'+event,{cid:rest.cid||currentCid,...rest});
+    if(['media_stopped','go_live_closed'].includes(event))log('info',`${event.replace(/_/g,' ')}: ${Object.entries(rest).filter(([k,v])=>['reason','initiated_by','result','intentional','exit_code','signal'].includes(k)&&v!==null&&v!==undefined).map(([k,v])=>`${k}=${v}`).join(' ')}`);
+    return;
+  }
+  if(['playing','paused','standby','ended','failed','starting','stream_requested','stopped','error','ready'].includes(event)){
+    timeline.record('worker_state_'+event,{cid:rest.cid||currentCid,from:worker.status,to:rest.status||event,reason:rest.reason||rest.message||null,position:rest.position??null});
+  }
+}
 function consumeWorkerLine(line,kind){
   workerTail.push(scrub(line).slice(0,300));if(workerTail.length>30)workerTail.shift();
   if(line.startsWith('TV_BRIDGE_JSON:')){
     try{
       const e=JSON.parse(line.slice('TV_BRIDGE_JSON:'.length));
       if(commands.accept(e))return;
+      workerEvent(e);
       if(e.event==='ready'){worker.ready=true;worker.streamerId=e.streamerId;worker.channels=e.channels||[];worker.account=e.streamer||'';if(['offline','connecting','failed'].includes(worker.status))worker.status='connected';log('info',`Connected as ${worker.account} to ${e.server} (${worker.channels.length} channels)`)}
       else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.failReason=e.event==='failed'?String(e.reason||''):'';worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed'){if(e.reason==='kicked')log('warning','Removed from the voice channel; the bot will rejoin');else{const hint=lastFfmpegProblem();log('error',`Playback interrupted${e.reason?` (${e.reason})`:''}${hint?`. Last FFmpeg message: ${hint}`:''}`);for(const line of workerTail.slice(-6))log('warning','worker: '+line)}}}
       else if(e.event==='starting'){worker.status='starting';worker.position=e.position??0;worker.playing=e.title;worker.voice=e.channel;log('info','Go Live connection starting')}
@@ -131,9 +169,14 @@ function consumeWorkerLine(line,kind){
   }
   // Playback state comes from structured events, never log matching.
   // Structured lifecycle events own end-of-stream status.
-  if(/go-live connection failed|timed out waiting for audio|ffmpeg.*HTTP error/.test(line)){log('error','Streamer encountered a video/Go Live error; see activity log')}
-  if(/(token|credentials delivered|user agent|TLS fingerprint|session id)/i.test(line)&&!/(error|warning)/i.test(line))return;
-  if(/(ERROR|WARNING|Connected to test server|go-live stream finished|video stats|GoLive connection ready|starting go-live)/i.test(line))log(kind,line);
+  // Worker log lines look like "2026-11-24 11:20:00,123 WARNING logger message". Keep the severity, drop the duplicate timestamp.
+  const parsed=/^\d{4}-\d\d-\d\d[ T][\d:,.]+\s+(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\S+)\s+(.*)$/.exec(line);
+  const level=parsed?parsed[1]:/\bERROR\b|Traceback/.test(line)?'ERROR':/\bWARNING\b/.test(line)?'WARNING':'INFO';
+  const text=parsed?parsed[3]:line;
+  const severity=level==='ERROR'||level==='CRITICAL'?'error':level==='WARNING'?'warning':'info';
+  if(/go-live connection failed|timed out waiting for audio|ffmpeg.*HTTP error/.test(text))timeline.record('worker_problem',{cid:currentCid,text:scrub(text).slice(0,200)});
+  if(/\b(token|credentials delivered|user agent|TLS fingerprint|session id)\b/i.test(text)&&severity==='info')return;
+  if(severity!=='info'||/(Connected to test server|go-live stream finished|GoLive connection ready|starting go-live|Effective encoder settings|Stream settings)/i.test(text))log(severity,`worker: ${text}`);
 }
 async function probeSource(source){
  const {ffmpegInputOptions}=await import('./src/ffmpeg.mjs');
@@ -204,7 +247,21 @@ async function body(req){
 }
 function state(){return {version:VERSION,cloud:CLOUD,status:worker.status,connected:worker.ready,account:worker.account,
  guild:worker.ready?worker.guild:null,channels:worker.channels,playing:worker.playing,
- position:worker.position||0,duration:worker.duration||null,quality:worker.quality||'720p',maxHeight:worker.maxHeight||0,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,config:streamConfig,envFixes,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+ position:worker.position||0,duration:worker.duration||null,quality:worker.quality||'720p',maxHeight:worker.maxHeight||0,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,config:streamConfig,build:BUILD,providerHealth:health.summary().map(h=>({provider:h.provider,cooldownLeftS:h.cooldownLeftS,lastFailureClass:h.lastFailureClass})),envFixes,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+function diagnostics(cid=''){
+  const rows=timeline.forCid(cid||null);
+  const cids=[...new Set(timeline.ring.map(e=>e.cid).filter(Boolean))].slice(-8);
+  const loop=loopDelay;const ms=n=>Math.round(n/1e4)/100;
+  const cg=name=>{try{return readFileSync(name,'utf8').trim()}catch{return null}};
+  return {build:BUILD,generatedAt:new Date().toISOString(),uptimeS:Math.round(process.uptime()),
+    worker:{status:worker.status,ready:worker.ready,account:null,guild:worker.guild?'[set]':null,quality:worker.quality||null,maxHeight:worker.maxHeight||0,failReason:worker.failReason||'',safeMode,config:streamConfig},
+    tvProcess:{eventLoopDelayMs:{p50:ms(loop.percentile(50)),p99:ms(loop.percentile(99)),max:ms(loop.max)},rssMb:Math.round(process.memoryUsage().rss/1048576),memory:memoryReport(),
+      cgroupCpuStat:cg('/sys/fs/cgroup/cpu.stat')?.split('\n').filter(l=>/throttled|nr_periods|usage_usec/.test(l)).join(' ')||null,cpus:os.availableParallelism?.()??os.cpus().length},
+    providerHealth:health.summary(),
+    summaries:cids.map(c=>timeline.summarize(c)),
+    timeline:redactRows(rows.slice(-400)),logs:logs.slice(-60).map(l=>({time:l.time,kind:l.kind,msg:scrub(l.msg)}))};
+}
+const redactRows=rows=>rows.map(r=>JSON.parse(redactText(JSON.stringify(r))));
 function err(res,e,code=400){const m=String(e?.message||e||'Unknown error').replace(/https?:\/\/[^\s<>"']+/g,'[media URL]');log('error',m);json(res,code,{error:m.slice(0,1800)})}
 const STATIC={'/':'index.html','/ui.js':'ui.js','/ui.css':'ui.css'};
 const TYPES={'index.html':'text/html; charset=utf-8','ui.js':'application/javascript; charset=utf-8','ui.css':'text/css; charset=utf-8'};
@@ -226,7 +283,8 @@ const server=http.createServer(async(req,res)=>{
    if(path==='/api/state'&&req.method==='GET'){const snapshot=state();if(role==='bridge'){delete snapshot.logs;delete snapshot.account;delete snapshot.lastError;}return json(res,200,snapshot);}
    if(path==='/api/providers'&&req.method==='GET')return json(res,200,{providers:[...(await getProviders()).keys()]});
    if(path==='/api/search'&&req.method==='GET'){
-     const q=(url.searchParams.get('q')||'').trim().slice(0,80);
+     const typed=(url.searchParams.get('q')||'').trim().slice(0,80);
+     const q=expandQuery(typed);   // hxh -> hunter x hunter, jjk -> jujutsu kaisen, ...
      const provider=url.searchParams.get('provider')||'all';
      if(q.length<2)throw new Error('Type at least 2 characters');
      // Content providers are independent from the metadata catalog. A metadata hit is NOT playable.
@@ -256,6 +314,12 @@ const server=http.createServer(async(req,res)=>{
      log('info',`Checked ${loaded.sources.length} matching source listings; ${loaded.episodes.length} episodes with Sub/Dub availability`);
      return json(res,200,loaded);
    }
+   if(path==='/api/diagnostics'){
+     // Admin only: the bridge key (the bot) never reads or changes diagnostics. Everything returned is already redacted.
+     if(!['GET','POST'].includes(req.method))return json(res,405,{error:'Method not allowed'});
+     if(req.method==='POST'){const b=await body(req);const secs=Math.min(600,Math.max(0,Number(b.debugSeconds)||0));if(worker.child)control({op:'diag',debugSeconds:secs});timeline.record('debug_mode',{seconds:secs});return json(res,202,{ok:true,debugSeconds:secs})}
+     return json(res,200,diagnostics(String(url.searchParams.get('cid')||'')));
+   }
    if(path==='/api/connect'&&req.method==='POST'){
      const b=await body(req);
      const token=(CLOUD?process.env.CAMELOT_STREAMER_TOKEN:b.token)||worker.token;
@@ -269,7 +333,9 @@ const server=http.createServer(async(req,res)=>{
      try{
        const b=await body(req);
        const generation=++playGeneration;
+       const cid=cidOf(b.cid);currentCid=cid;
        const deadline=Date.now()+180000;
+       timeline.record(checkOnly?'check_request':'play_request',{cid,gen:generation,provider:String(b.provider||''),lang:b.lang,source:b.source||'auto',quality:b.quality||null,status_before:worker.status,initiated_by:b.initiatedBy||'user'});
        let maxHeight=0;
        const provider=String(b.provider||''),media=String(b.media||''),unit=String(b.unit||'');
        const episodes=cachedGet(`episodes:${provider}:${media}`)||[];
@@ -290,8 +356,12 @@ const server=http.createServer(async(req,res)=>{
        // Only show the standby slate when nothing is live yet. While a stream is already up (switching episodes),
        // keep it playing during verification and swap once: that avoids a second Go Live restart (~8 s).
        if(!checkOnly&&!['standby','streaming','paused','starting','requested'].includes(worker.status))await commands.request({op:'standby',channel});
+       queue=health.order(queue);
+       timeline.record('resolve_start',{cid,gen:generation,providers:queue.map(q=>q.provider),episode:chosen.number});
        log('info',`Testing ${queue.length} matching provider(s) for episode ${chosen.number}: ${queue.map(q=>q.provider).join(', ')}`);
        const result=await tryPlayableEpisode({
+         health,concurrency:3,providerTimeoutMs:9000,
+         onEvent:ev=>{const {ev:name,...rest}=ev;timeline.record(name,{cid,gen:generation,...rest})},
          queue,episode:chosen,language:lang,
          list:cachedEpisodes,resolve:resolveEpisode,rank:rankedStreams,
          prepare:async source=>{const prepared=await prepareCaptions(source,captions,{shouldStop:()=>generation!==playGeneration||Date.now()>deadline});if(prepared.subtitleDir)captionFiles.add(prepared);return prepared;},
@@ -308,12 +378,15 @@ const server=http.createServer(async(req,res)=>{
            worker.quality=quality;worker.maxHeight=height;
            if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
            worker.duration=duration;worker.position=Number(b.position)||0;worker.failReason='';worker.status='starting';
-           await commands.request({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
+           timeline.record('worker_play_sent',{cid,gen:generation,quality,duration_known:duration!==null,height:height||null});
+           await commands.request({op:'play',cid,gen:generation,duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);
          }
        });
-       log('info',`Verified a real video frame from ${result.provider}${checkOnly?'':' ; requested Go Live'}`);
+       timeline.record('resolve_done',{cid,gen:generation,provider:result.provider,failures:(result.failures||[]).map(f=>({provider:f.provider,class:f.class||null}))});
+       timeline.record('play_ack',{cid,gen:generation,provider:result.provider});
+       log('info',`Verified a real video frame from ${result.provider}${checkOnly?'':' ; requested Go Live'} (cid ${cid})`);
        return json(res,checkOnly?200:202,{ok:true,quality:result.quality,maxHeight,hd:maxHeight>=1000,streamQuality:worker.quality||'720p',provider:result.provider,
          language:lang,subtitle:result.subtitle,failures:result.failures,message:checkOnly?'Episode video verified. Press Play to stream it.':'Verified real video frame; starting Go Live.'});
      }finally{playBusy=false}
@@ -361,12 +434,17 @@ const server=http.createServer(async(req,res)=>{
      return json(res,202,{ok:true});
    }
    if(path==='/api/stop'&&req.method==='POST'){
-     if(role==='bridge'){const b=await body(req);if(String(b.guild||'')!==String(worker.guild||process.env.CAMELOT_GUILD_ID||''))throw new Error('This TV worker is paired with a different server');}
+     const sb=await body(req).catch(()=>({}));
+     if(role==='bridge'&&String(sb.guild||'')!==String(worker.guild||process.env.CAMELOT_GUILD_ID||''))throw new Error('This TV worker is paired with a different server');
+     const reason=String(sb.reason||'user_stop').slice(0,40).replace(/[^\w.-]/g,'_'),by=String(sb.initiatedBy||role||'admin').slice(0,30).replace(/[^\w.-]/g,'_');
      playGeneration++;const old=activeCaptions;activeCaptions=null;retireCaptions(old);
-     if(worker.child)await commands.request({op:'stop'});return json(res,202,{ok:true});
+     timeline.record('stop_request',{cid:currentCid,reason,initiated_by:by,status_before:worker.status});
+     log('info',`Stop requested: reason=${reason} initiated_by=${by} state=${worker.status}`);
+     if(worker.child)await commands.request({op:'stop',reason,initiatedBy:by});return json(res,202,{ok:true});
    }
    if(path==='/api/disconnect'&&req.method==='POST'){
-     playGeneration++;
+     playGeneration++;worker.quitRequested=true;worker.quitBy=role||'admin';
+     timeline.record('disconnect_request',{cid:currentCid,initiated_by:worker.quitBy});
      if(worker.child)await commands.request({op:'quit'});return json(res,202,{ok:true});
    }
    return json(res,404,{error:'Unknown endpoint'});
@@ -392,7 +470,7 @@ server.listen(PORT,HOST,()=>{
 });
 let shuttingDown=false;
 async function shutdown(){
- if(shuttingDown)return;shuttingDown=true;playGeneration++;
+ if(shuttingDown)return;shuttingDown=true;playGeneration++;worker.quitRequested=true;worker.quitBy='shutdown';
  server.close();server.closeAllConnections();
  const child=worker.child;
  if(child){

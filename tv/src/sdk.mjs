@@ -30,16 +30,24 @@ export async function getProviders() {
   return out;
 }
 import {settleWithGrace} from './grace.mjs';
+import {health,classifyFailure} from './health.mjs';
 export async function searchCatalog(q,which='all') {
   const p=await getProviders();
-  const targets=which==='all'?[...p.entries()]:[[which,p.get(which)]].filter(x=>x[1]);
+  let targets=which==='all'?[...p.entries()]:[[which,p.get(which)]].filter(x=>x[1]);
   if(!targets.length)throw new Error('Unknown provider');
+  // A source that keeps failing (dead DNS name, timeouts) sits out for a while instead of costing a timeout on every search.
+  const skipped=[];
+  if(which==='all'){const live=targets.filter(([key])=>!health.coolingDown(key));if(live.length){for(const [key] of targets)if(!live.some(x=>x[0]===key))skipped.push(key);targets=live}}
   const settled=await settleWithGrace(targets.map(async([key,instance])=>{
     // One dead or slow source must not hold up the whole search: 11 run in parallel and the
     // slowest used to decide the wait (12+ seconds every time). Tunable with PROVIDER_SEARCH_MS.
     const budget=Math.max(3000,Number(process.env.PROVIDER_SEARCH_MS)||7000);
     const ac=AbortSignal.timeout(budget);
-    const rows=await bounded(instance.search(q,{signal:ac}),budget+1500);
+    const began=Date.now();
+    let rows;
+    try{rows=await bounded(instance.search(q,{signal:ac}),budget+1500)}
+    catch(error){health.failure(key,error,{ms:Date.now()-began});throw error}
+    health.success(key,{ms:Date.now()-began});
     return (Array.isArray(rows)?rows:[]).filter(r=>r && typeof r.id==='string' && r.id.startsWith(key+':'))
       .slice(0,12).map(r=>({id:r.id,provider:key,title:String(r.title||'Untitled').slice(0,125),
         poster:typeof r.thumbnailUrl==='string'?r.thumbnailUrl:'',year:r.year??null,
@@ -50,8 +58,10 @@ export async function searchCatalog(q,which='all') {
     if(x.status!=='rejected')return null;
     const msg=String(x.reason?.message||'').slice(0,300);
     const code=msg.match(/(?:HTTP|status|error)\s*(4\d\d|5\d\d)/i)?.[1];
-    return {provider:targets[i][0],reason:code?`HTTP ${code}`:/abort|timeout|timed out/i.test(msg)?'timed out':/fetch|network|dns|connect/i.test(msg)?'network error':'source unavailable'};
+    const cls=classifyFailure(x.reason);
+    return {provider:targets[i][0],class:cls,reason:code?`HTTP ${code}`:cls==='dns'?'host not found':/abort|timeout|timed out/i.test(msg)?'timed out':/fetch|network|dns|connect/i.test(msg)?'network error':'source unavailable'};
   }).filter(Boolean);
+  for(const key of skipped)failures.push({provider:key,class:'cooldown',reason:'skipped after repeated failures'});
   return {results,failures};
 }
 export async function listEpisodes(provider,id) {

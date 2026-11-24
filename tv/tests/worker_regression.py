@@ -12,7 +12,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
     def make_bot(self, rc=0, duration=None):
         bot=worker.CamelotOnline.__new__(worker.CamelotOnline)
         player=SimpleNamespace(_frames_emitted=300,_fps=30,_proc=SimpleNamespace(poll=lambda:rc),is_alive=lambda:False)
-        async def stop():bot.live.player=None
+        async def stop(*_a):bot.live.player=None
         bot.live=SimpleNamespace(player=player,sender=None,stop=stop)
         bot.offset=0;bot.job={'duration':duration};bot.reported=True;bot.mode='streaming';bot.play_lock=asyncio.Lock();bot.started=time.monotonic()
         return bot
@@ -27,7 +27,7 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         await bot.monitor_once();self.assertEqual(bot.mode,'failed')
     async def test_end_cleanup_cannot_overlap_next_play(self):
         bot=self.make_bot();entered=asyncio.Event();finish=asyncio.Event();order=[]
-        async def stop():
+        async def stop(*_a):
             entered.set();await finish.wait();order.append('old stopped');bot.live.player=None
         async def play(job):order.append('next started')
         bot.live.stop=stop;bot._play=play
@@ -59,7 +59,7 @@ class KickTests(unittest.IsolatedAsyncioTestCase):
     def bot_in(self,voice_client,mode='streaming'):
         bot=worker.CamelotOnline.__new__(worker.CamelotOnline)
         stopped=[]
-        async def stop():stopped.append(1)
+        async def stop(*_a):stopped.append(1)
         bot.live=SimpleNamespace(player=SimpleNamespace(_frames_emitted=300,_fps=30,_proc=None,is_alive=lambda:True),sender=None,stop=stop)
         bot.offset=12.0;bot.job={'duration':1400};bot.reported=True;bot.mode=mode;bot.play_lock=asyncio.Lock();bot.started=time.monotonic()
         bot.target_channel='222';bot.gone_ticks=0;bot.fail_reason=''

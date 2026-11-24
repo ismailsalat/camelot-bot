@@ -25,6 +25,8 @@ export function explicitSeason(title:string):number|null{
   m=n.match(/^(.*[a-z]) (\d)$/);if(m&&Number(m[2])>=2)return Number(m[2]);
   return null;
 }
+/** A release year written in the title, like "(2011)", or null. */
+export const releaseTag=(title:string)=>title.match(/\((19[5-9]\d|20\d\d)\)/)?.[1]??null;
 export const isSpecial=(title:string)=>SPECIAL.test(norm(title));
 
 type Hint={year?:number;count?:number};
@@ -41,7 +43,11 @@ function hintsFor(all:Array<Title&Hint>):Map<string,Hint>{
 export function buildFamily(selected:Title,rows:Title[],everything:Title[]=rows):Title[]{
   const key0=baseKey(selected.title);
   if(key0.length<3)return [];
-  const near=rows.filter(r=>{const k=baseKey(r.title);return k.length>=3&&(k.startsWith(key0)||key0.startsWith(k))});
+  let near=rows.filter(r=>{const k=baseKey(r.title);return k.length>=3&&(k.startsWith(key0)||key0.startsWith(k))});
+  // "Hunter x Hunter (1999)" and "Hunter x Hunter (2011)" are two adaptations of the same story, not season 1 and 2.
+  // When the siblings carry different release years in their names, keep only the one the person picked.
+  const tagYears=new Set(near.map(r=>releaseTag(r.title)).filter(Boolean));
+  if(tagYears.size>1){const mine=releaseTag(selected.title);near=near.filter(r=>releaseTag(r.title)===mine)}
   if(near.length<2)return [];
   const root=near.map(r=>baseKey(r.title)).sort((a,b)=>a.length-b.length)[0]!;
   const hints=hintsFor(everything as Array<Title&Hint>);

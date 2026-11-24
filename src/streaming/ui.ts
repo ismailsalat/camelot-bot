@@ -11,8 +11,8 @@ export function settingsCard(member:GuildMember){
   const settings=getSettings(member.guild.id),s=settings.streaming;
   return container().addTextDisplayComponents(heading('STREAMING'),text(`Streaming: **${settings.modules.streaming?'On':'Off'}**\nAccount: **${tokenSource(member.guild.id)}**\nIdle timeout: **${s.idleSeconds}s** · Empty VC: **${s.emptySeconds}s**\nControls: **one person at a time** · Auto next: **${s.autoNext?'On':'Off'}**`))
     .addTextDisplayComponents(text((settings.modules.streaming?'Join a VC and use /stream or !stream.':'Streaming is off. Press **Turn on Streaming** below, then **Save account**.')+' Saved tokens stay hidden; an empty token form does not mean the account was removed.'))
-    .addSeparatorComponents(divider()).addActionRowComponents(row(button('tvs:token','Save account'),button('tvs:clear','Remove saved account'),button('tvs:timers','Timeouts'),button('tvs:auto','Auto next: '+(s.autoNext?'On':'Off'))))
-    .addActionRowComponents(row(button('tvs:toggle',settings.modules.streaming?'Turn off Streaming':'Turn on Streaming',settings.modules.streaming?ButtonStyle.Secondary:ButtonStyle.Success),button('tvs:check','Check account'),button('tvs:debug','Debug info'),button(Ids.settingsHome(),'Back')));
+    .addSeparatorComponents(divider()).addActionRowComponents(row(button('tvs:token','Save account'),button('tvs:clear','Remove saved account'),button('tvs:timers','Timeouts'),button('tvs:auto','Auto next: '+(s.autoNext?'On':'Off')),button('tvs:debugmode','Detailed stats (5 min)')))
+    .addActionRowComponents(row(button('tvs:toggle',settings.modules.streaming?'Turn off Streaming':'Turn on Streaming',settings.modules.streaming?ButtonStyle.Secondary:ButtonStyle.Success),button('tvs:check','Check account'),button('tvs:debug','Debug info'),button('tvs:export','Export diagnostics'),button(Ids.settingsHome(),'Back')));
 }
 export function inputModal(id:string,title:string,label:string,placeholder:string,value?:string){
   const field=new TextInputBuilder().setCustomId('value').setLabel(label.slice(0,45)).setStyle(TextInputStyle.Short).setMaxLength(250).setRequired(true).setPlaceholder(placeholder.slice(0,100));
