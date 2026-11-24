@@ -20,6 +20,7 @@ os.dup2(_null_fd, 0)
 os.close(_null_fd)
 
 import env_clean
+import nal_guard
 env_clean.report(env_clean.clean_stream_env())
 
 import discord
@@ -94,6 +95,13 @@ def _tune_x264(cmd):
         cmd[cmd.index('-i'):cmd.index('-i')]=['-threads',threads]
     preset=os.environ.get('STREAM_X264_PRESET','').strip().lower()
     if preset in X264_PRESETS and '-preset' in cmd:cmd[cmd.index('-preset')+1]=preset
+    # -tune zerolatency turns on sliced threads: with -threads 4 every picture became 4 slices, and the player
+    # sends each slice as its own frame (4x the frame rate) while tiny non-first slices can crash libdave.
+    # One slice per picture with frame threading keeps the timing exact and the data safe.
+    if '-x264-params' in cmd:
+        j=cmd.index('-x264-params')+1
+        parts=[p for p in cmd[j].split(':') if p and p.split('=')[0] not in ('slices','sliced-threads')]
+        cmd[j]=':'.join(parts+['slices=1','sliced-threads=0'])
     if '-vf' in cmd:
         i=cmd.index('-vf')+1
         # Lanczos keeps text and line art crisp when scaling a 1080p source down.
@@ -123,6 +131,25 @@ def _headers_ffmpeg_cmd(self):
         cmd[i]=f'setpts=PTS+{offset}/TB,'+overlay[0]+f',setpts=PTS-{offset}/TB'+(','+overlay[1] if len(overlay)>1 else '')
     return cmd
 H264VideoPlayer._ffmpeg_cmd=_headers_ffmpeg_cmd
+
+_original_send_frame=H264VideoPlayer._send_frame
+_guard_stats={'dropped':0,'last_log':0.0,'reasons':{}}
+def _guarded_send_frame(self,nal_units):
+    # When playback is stopped the player flushes whatever half-read data is left; never encrypt that.
+    if self._end.is_set():return
+    safe,problems=nal_guard.sanitize(nal_units)
+    if problems:
+        _guard_stats['dropped']+=1
+        for reason in problems:_guard_stats['reasons'][reason.split(' (')[0]]=_guard_stats['reasons'].get(reason.split(' (')[0],0)+1
+        now=time.monotonic()
+        if now-_guard_stats['last_log']>=10:
+            _guard_stats['last_log']=now
+            logging.getLogger('camelot_online').warning('Video guard skipped unsafe data in %d frame(s) so far: %s',_guard_stats['dropped'],', '.join(f'{k} x{v}' for k,v in _guard_stats['reasons'].items()))
+    if not safe:return
+    try:_original_send_frame(self,safe)
+    except Exception as exc:
+        logging.getLogger('camelot_online').warning('Video frame could not be encrypted and was skipped: %s',str(exc)[:160])
+H264VideoPlayer._send_frame=_guarded_send_frame
 
 discord.voice_state.davey=davey_compat
 discord.gateway.davey=davey_compat

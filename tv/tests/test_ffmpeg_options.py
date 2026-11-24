@@ -102,3 +102,18 @@ class EnvCleanTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index('-maxrate') + 1], '6000k')
         self.assertEqual(cmd[cmd.index('-bufsize') + 1], '12000k')
         self.assertEqual(len(bad), 2)
+
+
+class SingleSliceTests(unittest.TestCase):
+    def test_x264_is_forced_to_one_slice_per_picture(self):
+        import os
+        src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
+        ns = {'os': os, 're': __import__('re')}
+        exec(src[src.index("X264_PRESETS="):src.index("_original_ffmpeg_cmd=")], ns)
+        cmd = ['ffmpeg', '-i', 'in', '-vf', 'scale=1280:720', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'zerolatency',
+               '-x264-params', 'aud=1']
+        ns['_tune_x264'](cmd)
+        params = cmd[cmd.index('-x264-params') + 1].split(':')
+        self.assertIn('aud=1', params); self.assertIn('slices=1', params); self.assertIn('sliced-threads=0', params)
+        again = list(cmd); ns['_tune_x264'](again)  # idempotent
+        self.assertEqual(again[again.index('-x264-params') + 1].split(':').count('slices=1'), 1)

@@ -200,10 +200,12 @@ export class Streaming {
     catch(error){
       // If the streaming process itself died mid-start, every source then reports "not connected".
       // That is not the episode's fault: reconnect the account once and try again.
-      if(!(error instanceof Error)||!/Streaming account disconnected|Streamer is not connected/.test(error.message))throw error;
-      log.warn('Streaming worker stopped while starting playback; reconnecting once.');
+      if(!(error instanceof Error)||!/Streaming account disconnected|Streamer is not connected|Choose an anime and episode from search results first/.test(error.message))throw error;
+      log.warn('Streaming worker stopped while starting playback; reconnecting once. ('+error.message.slice(0,80)+')');
       s.note='Reconnecting the streaming account…';await this.paint();
       await this.prepare();
+      // Reconnecting restarts the TV service, which forgets the search it had cached; load the title again.
+      await this.episodesFor(s.title);
       result=await this.bridge.call('/api/play',playRequest);
     }
     s.actualSource=result.provider;s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();

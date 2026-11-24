@@ -81,3 +81,21 @@ test('a background warm-up and a later connect share one connection attempt',asy
   assert.equal(started,1);
   await b.connect('g','t');assert.equal(started,2);
 });
+
+test('after a crash the TV service restarts empty: the title is searched again before the retry plays',async()=>{
+  const tv:any=new Streaming();const calls:string[]=[];let restarted=false,plays=0;
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}};
+  tv.paint=async()=>{};tv.persist=()=>{};
+  tv.prepare=async()=>{calls.push('prepare');if(plays===1)restarted=true};
+  tv.bridge={call:async(path:string)=>{
+    if(path.startsWith('/api/episodes')){calls.push('episodes');if(restarted&&!calls.includes('search'))throw new Error('Search for this anime first');return {sources:[{status:'checked',provider:'hianime'}],episodes:[{id:'e1',number:1}]}}
+    if(path.startsWith('/api/search')){calls.push('search');return {results:[{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}]}}
+    plays++;calls.push('play');
+    if(plays===1)throw new Error('No playable video found. hianime: Streaming account disconnected.');
+    if(!calls.includes('search'))throw new Error('Choose an anime and episode from search results first');
+    return {provider:'hianime'};
+  }};
+  await tv.startEpisode(0);
+  assert.equal(tv.session.actualSource,'hianime');
+  assert(calls.indexOf('search')>calls.lastIndexOf('prepare'));assert(calls.indexOf('search')<calls.lastIndexOf('play'));
+});
