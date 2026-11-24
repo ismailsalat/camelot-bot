@@ -126,7 +126,7 @@ function renderModules(member: GuildMember) {
     .addTextDisplayComponents(
       text(
         `**Text commands** — ${settings.core.textCommands ? 'On' : 'Off'}\n` +
-          `Text shortcuts: \`${prefix}allies\`, \`${prefix}purge @someone\`. Streaming uses \`/stream\`.\n` +
+          `Text shortcuts: \`${prefix}allies\`, \`${prefix}purge @someone\`. Streaming uses \`/stream\` or \`!stream\`; its fallback stays available when text commands are off.\n` +
           `Prefix: \`${prefix}\`${own ? '' : ' _(from the host settings)_'}`,
       ),
     );

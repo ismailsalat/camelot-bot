@@ -98,7 +98,7 @@ See **[DEPLOY.md](DEPLOY.md)** for the step-by-step version. The short form:
 |---|---|---|---|
 | `/help` | `!help` | everyone | What Camelot does, generated from the live command registry |
 | `/settings` | — | admins | One place to configure everything |
-| `/stream` | slash only | everyone | Open Streaming controls in your VC |
+| `/stream` | `!stream` | everyone | Open Streaming controls in your VC |
 | `/activity` | `/allies`, `!allies` | everyone | Your own activity; admins can look up anyone |
 | `/purge` | `!purge @someone` | admins | Review members one at a time |
 
@@ -144,17 +144,14 @@ farm the number `!allies` reports.
 
 ### Keeping Discord in step
 
-Camelot publishes its own slash commands at boot, and only when the set has
-actually changed — so an ordinary restart makes no API call. Adding an option
-to an existing command counts as a change, so `/allies @someone` cannot end up
-registered without somewhere to put the mention.
+Camelot checks Discord’s registered commands at boot and repairs missing entries. It also registers `/stream` in joined servers and retries failed startup syncs. Use `!stream` if the slash menu is unavailable; it opens the same VC controls.
 
 `npm run register` still exists if you prefer to do it by hand.
 
 ## Modules
 
 **Core** is always on: help, settings, permissions, command registration.
-**Clips**, **Activity** and **The Purge** can each be switched off in
+**Streaming**, **Clips**, **Activity** and **The Purge** can each be switched off in
 `/settings → Modules`. The Purge depends on Activity, so turning Activity off
 turns The Purge off too and says why. A disabled module stops doing work —
 its event handlers return immediately.
@@ -393,7 +390,7 @@ flags unreachable emojis, and says whether tracking has enough history yet.
 | Activity shows nothing | Tracking needs a full day before anything is "observed" |
 | The Purge says nobody is inactive | It needs 21 fully observed days before judging anyone |
 | `/purge` missing | Needs Activity on, and Kick Members for the bot |
-| Commands missing | Camelot publishes them at boot; a brand new global command can still take up to an hour to appear |
+| Commands missing | Use `!stream`; check Railway logs for `Camelot Streaming v13` and command sync errors |
 | `!allies` does nothing | Check the prefix in `/settings` → Modules, and that text commands are on |
 | `npm install` fails on `better-sqlite3` | Native module. The Dockerfile installs what it needs; locally you may need build tools |
 

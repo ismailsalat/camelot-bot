@@ -4,6 +4,7 @@ import { parseCommand, prefixFor, resolveTarget, textCommandsEnabled } from './p
 import { runCommand } from './dispatch.js';
 import { commandByName } from './registry.js';
 import { NO_MENTIONS } from '../util/mentions.js';
+import { streaming } from '../streaming/service.js';
 import { log } from '../logger.js';
 
 /**
@@ -15,19 +16,23 @@ import { log } from '../logger.js';
  * privately rather than wiping the card for everyone else reading it.
  */
 
+/** Literal !stream remains a fallback when a custom prefix or text switch is set.
+ * Streaming's module, voice and controller permissions still apply. */
+export function parseTextCommand(content:string,guildId:string){
+  if(/^!stream(?:\s|$)/i.test(content))return parseCommand(content,'!');
+  return textCommandsEnabled(guildId)?parseCommand(content,prefixFor(guildId)):null;
+}
+
 /** Cheap enough to call on every message in the server. */
 export function looksLikeTextCommand(message: Message<true>): boolean {
   if (message.author.bot || message.system) return false;
-  if (!textCommandsEnabled(message.guildId)) return false;
-  return parseCommand(message.content ?? '', prefixFor(message.guildId)) !== null;
+  return parseTextCommand(message.content ?? '', message.guildId) !== null;
 }
 
 export async function handleTextCommand(message: Message<true>): Promise<void> {
   if (message.author.bot || message.system) return;
   if (!message.member) return;
-  if (!textCommandsEnabled(message.guildId)) return;
-
-  const parsed = parseCommand(message.content ?? '', prefixFor(message.guildId));
+  const parsed = parseTextCommand(message.content ?? '', message.guildId);
   if (!parsed) return;
 
   // Nothing is said in a channel Camelot cannot speak in — a silent failure is
@@ -37,6 +42,11 @@ export async function handleTextCommand(message: Message<true>): Promise<void> {
   if (!me || !channel.isTextBased() || channel.isDMBased()) return;
   const allowed = channel.permissionsFor(me);
   if (!allowed?.has(PermissionFlagsBits.SendMessages) || !allowed.has(PermissionFlagsBits.ViewChannel)) return;
+
+  if(parsed.name==='stream'){
+    if(parsed.args.length){await send(message,notice('Use !stream by itself, then choose Find anime in the VC controls.'));return}
+    await streaming.handleText(message);return;
+  }
 
   const spec = commandByName(parsed.name);
 

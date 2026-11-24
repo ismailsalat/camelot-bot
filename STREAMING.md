@@ -12,7 +12,7 @@ This package adds Streaming to the existing Camelot bot. Use the files **inside 
 Use **Check account** in Settings → Streaming to verify login and server membership before playing. This check does not start a stream. `/help` lists Streaming even when it is off, and Bot Status checks whether its saved account can be opened.
 
 6. The streaming account must already belong to the server and have access to the voice channel. Camelot needs View Channel, Send Messages, Read Message History and Attach Files in VC chat. The streaming account needs Connect, Speak and Video permissions.
-7. Join a VC and run `/stream`. Select **Find anime**, pick the title, then **Play**. New commands publish automatically at startup.
+7. Join a VC and use `/stream` or type `!stream` in chat. Select **Find anime**, pick the title, then **Play**. New commands publish automatically at startup.
 
 The image installs Node, Python, FFmpeg, Opus and fonts. Software H.264 is supported without a GPU. Defaults are 720p, 30 fps and 2500k video bitrate. `STREAM_FPS`, `STREAM_RESOLUTION` and `STREAM_VIDEO_BITRATE` can be set in Railway if needed.
 
@@ -61,7 +61,7 @@ No Discord account or live Railway deployment was used for validation. Docker it
 
 ## Validation
 
-- `npm test`: 298 bot tests, including new session, queue, permissions, token, time input and panel recovery cases.
+- `npm test`: 309 bot tests, including new session, queue, permissions, token, time input and panel recovery cases.
 - `npm run typecheck` and `npm run build`: passed.
 - `cd tv && npm test`: 56 TV tests.
 - `python3 -m unittest discover -s tests -p 'test_*.py'`: 8 Python utility/lifecycle tests.
@@ -79,3 +79,11 @@ Help, Settings and Bot Status consistently include Streaming. Blank token forms 
 Next/Previous clear the old episode timing. Seek uses the current worker position and checks the duration. Controls wait for worker acknowledgments. Stop cancels pending work before freeing the reservation. Stream-end cleanup holds the same lock as episode replacement. A failed FFmpeg exit cannot be mistaken for a completed episode.
 
 The panel retries transient update failures without deleting its working copy. Updates arriving during a Discord edit are applied afterward. Loading disables overlapping playback changes, and unauthorized clicks cannot change the active stream’s state. Public failures use short wording; source diagnostics stay in logs.
+
+## v13 command entry fix
+
+Startup checks Discord’s command list instead of trusting a local fingerprint. A missing `/stream` is repaired globally and upserted into joined servers without deleting unrelated guild commands. Failed startup syncs retry twice. Registration starts before member-cache loading and panel recovery, using the logged-in application ID.
+
+`!stream` opens the same VC panel as `/stream`, with the same account, module, voice-channel, queue and controller rules. It remains available even with a custom prefix or general text commands turned off. The configured prefix also works when text commands are on. Enable Message Content Intent in the Developer Portal so text commands can be read.
+
+The 11 added tests cover actual text routing, module/voice restrictions, busy-session handling, cached-but-missing commands, guild registration, retry reporting and preservation of other servers’ global commands. No live Discord registration was performed in the build workspace.

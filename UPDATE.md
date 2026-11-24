@@ -20,14 +20,14 @@ The installer contains the complete source update. It backs up replaced files an
 ```powershell
 git status --short
 git add -A
-git commit -m "Fix Streaming controls and help"
+git commit -m "Fix stream registration and text fallback"
 if ($LASTEXITCODE -eq 0) { git push }
 ```
 
 5. On Railway, use the root Dockerfile, one replica, a persistent volume at `/data`, and `DATABASE_PATH=/data/camelot.sqlite`. Keep the existing bot token and application ID. Do not use a public health-check URL for this Discord worker.
 6. In Discord: `/settings` → Modules → **Turn on Streaming**. Then `/settings` → Streaming → **Save account** → **Check account**.
-7. Join a voice channel, run `/stream`, choose **Find anime**, select a title and press **Play**.
+7. Join a voice channel, type `!stream` in chat (or use `/stream`), choose **Find anime**, select a title and press **Play**.
 
 The streaming account must already be in the server. An empty token input is normal after saving; the Settings card shows the stored-account status. After deployment, test Next, Previous, Pause, Play, seeking and a queued user's turn in your server. Live Discord and Railway playback have not been verified from this build workspace.
 
-If `/stream` is missing, check startup logs for slash-command publication errors. The bot publishes commands on startup; it also supports `npm run register:prod` after building when your local `.env` contains the correct bot credentials.
+If `/stream` is missing, use `!stream`. Check Railway logs for `Camelot Streaming v13: /stream and !stream handlers loaded.` to confirm this version is deployed. If `!stream` gets no reply, confirm Message Content Intent is enabled in the Discord Developer Portal, and that Camelot can read and send messages in that channel. The bot publishes commands on startup; it also supports `npm run register:prod` after building when your local `.env` contains the correct bot credentials.

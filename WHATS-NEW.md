@@ -1,3 +1,10 @@
+# Streaming v13
+
+- Fixed missing `/stream` registration recovery and added server-scoped registration.
+- Added a working `!stream` entry that opens the same controls.
+- Updated Help and setup wording with the text fallback.
+- Added 11 regression tests. See UPDATE.md to apply this release.
+
 # Streaming v12
 
 - Streaming appears in Help, Settings, Modules and Bot Status.

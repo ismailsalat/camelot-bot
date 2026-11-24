@@ -62,7 +62,16 @@ registerUpkeepJobs();
 
 client.once(Events.ClientReady, async (ready) => {
   log.info(`Logged in as ${ready.user.tag} in ${ready.guilds.cache.size} server(s).`);
+  log.info('Camelot Streaming v13: /stream and !stream handlers loaded.');
   log.info(`Text commands use "${env.commandPrefix}" unless a server sets its own.`);
+
+  if(env.clientId!==ready.user.id)log.warn('DISCORD_CLIENT_ID differs from the logged-in bot. Registering commands for the actual bot account.');
+  const syncCommands=async(attempt=0):Promise<void>=>{
+    const result=await publishCommands({clientId:ready.user.id,token:env.token,devGuildId:env.devGuildId,guildIds:[...ready.guilds.cache.keys()]});
+    if(result.reason==='failed'&&attempt<2)setTimeout(()=>void syncCommands(attempt+1),attempt===0?60000:300000).unref();
+  };
+  // Registration starts before member-cache loading or Streaming panel restoration.
+  void syncCommands();
 
   for (const guild of ready.guilds.cache.values()) {
     await warmMemberCache(guild);
@@ -76,17 +85,12 @@ client.once(Events.ClientReady, async (ready) => {
   startCoverage(ready);
   startScheduler(client);
 
-  // Keeps Discord's command list in step with the code without a separate
-  // deploy step. Does nothing when nothing has changed.
-  await publishCommands({
-    clientId: env.clientId,
-    token: env.token,
-    devGuildId: env.devGuildId,
-  });
+
 });
 
 client.on(Events.GuildCreate, (guild: Guild) => {
   log.info(`Joined ${guild.name} (${guild.id}).`);
+  if(client.user)void publishCommands({clientId:client.user.id,token:env.token,devGuildId:env.devGuildId,guildIds:[guild.id]});
   void warmMemberCache(guild);
   onJoinGuild(guild);
   scheduleWeekly(guild.id);

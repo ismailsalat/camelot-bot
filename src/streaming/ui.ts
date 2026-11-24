@@ -8,7 +8,7 @@ import {clock,type Session} from './model.js';
 export function settingsCard(member:GuildMember){
   const settings=getSettings(member.guild.id),s=settings.streaming;
   return container().addTextDisplayComponents(heading('STREAMING'),text(`Streaming: **${settings.modules.streaming?'On':'Off'}**\nAccount: **${tokenSource(member.guild.id)}**\nIdle timeout: **${s.idleSeconds}s** · Empty VC: **${s.emptySeconds}s**\nControls: **one person at a time** · Auto next: **${s.autoNext?'On':'Off'}**`))
-    .addTextDisplayComponents(text((settings.modules.streaming?'Join a VC and use /stream.':'The server owner can turn on Streaming in Settings → Modules.')+' Saved tokens stay hidden; an empty token form does not mean the account was removed.'))
+    .addTextDisplayComponents(text((settings.modules.streaming?'Join a VC and use /stream or !stream.':'The server owner can turn on Streaming in Settings → Modules.')+' Saved tokens stay hidden; an empty token form does not mean the account was removed.'))
     .addSeparatorComponents(divider()).addActionRowComponents(row(button('tvs:token','Save account'),button('tvs:clear','Remove saved account'),button('tvs:timers','Timeouts'),button('tvs:auto','Auto next: '+(s.autoNext?'On':'Off'))))
     .addActionRowComponents(row(button('tvs:check','Check account'),button(Ids.settingsHome(),'Back')));
 }

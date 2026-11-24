@@ -224,6 +224,25 @@ export class Streaming {
     if(this.retries++>=2){await this.fail(new Error('Playback keeps failing. Choose another source or press Play.'));return}
     const s=this.session!;s.source='auto';s.note='Reconnecting…';await this.play(s.position);
   }
+  async open(member:GuildMember){
+    if(this.closed||this.stopping)throw new Error('Streaming is stopping. Try again in a moment.');
+    if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is off. The server owner can enable it in Settings → Modules.');
+    this.voice(member);
+    if(this.session?.owner&&(this.session.guild!==member.guild.id||this.session.owner!==member.id)){
+      return {content:'Streaming is in use. Join the queue for a turn.',components:[new ActionRowBuilder<any>().addComponents((await import('../core/ui.js')).button('tvr:queue','My turn'))]};
+    }
+    await this.gate.run(async()=>{
+      await this.claim(member);await this.paint(true);
+      if(!this.session!.title){await this.prepare();await this.bridge.call('/api/standby',{channel:this.session!.channel})}
+    });
+    return {content:`Streaming controls are in <#${this.session!.channel}>.`,components:[]};
+  }
+  async handleText(message:Message<true>){
+    if(message.author.bot||message.system||!message.member)return;
+    const progress=await message.reply({content:'Opening Streaming controls…',allowedMentions:NO_MENTIONS});
+    try{await progress.edit({...await this.open(message.member),allowedMentions:NO_MENTIONS})}
+    catch(error){await progress.edit({content:error instanceof Error?error.message:'Could not open Streaming. Try again.',components:[],allowedMentions:NO_MENTIONS})}
+  }
   async handle(i:Interaction):Promise<boolean>{
     const command=i.isChatInputCommand()&&i.commandName==='stream';
     const custom=('customId' in i)?i.customId:'';
@@ -238,11 +257,7 @@ export class Streaming {
       if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is turned off. Ask the server owner to enable it in Settings → Modules.');
       if(command){
         await i.deferReply({flags:MessageFlags.Ephemeral});
-        if(this.session?.owner&&(this.session.guild!==member.guild.id||this.session.owner!==member.id)){
-          const ch=this.voice(member);
-          await i.editReply({content:'Streaming is in use. Use the active VC’s panel or join the queue for a turn.',components:[new ActionRowBuilder<any>().addComponents((await import('../core/ui.js')).button('tvr:queue','My turn'))],allowedMentions:NO_MENTIONS});return true;
-        }
-        await this.gate.run(async()=>{await this.claim(member);await this.paint(true);if(!this.session!.title){await this.prepare();await this.bridge.call('/api/standby',{channel:this.session!.channel})}});await reply(`Streaming controls are in <#${this.session!.channel}>.`);return true;
+        await i.editReply({...await this.open(member),allowedMentions:NO_MENTIONS});return true;
       }
       if(custom==='tvr:queue'||custom.endsWith(':queue')){
         const ch=this.voice(member);

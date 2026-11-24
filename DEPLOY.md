@@ -80,11 +80,9 @@ Railway redeploys on its own when you push to `main`.
 
 ### Registering the slash command
 
-**Camelot does this itself.** On boot it compares its command set with what it
-last published and calls Discord only if they differ, so a new command appears
-after a deploy with nothing for you to run. The log line to look for is
-`Published 6 command(s) globally`. An ordinary restart logs nothing, because
-nothing changed.
+**Camelot does this itself.** On boot it reads the registered commands from Discord and repairs missing entries. It registers `/stream` in each joined server as well. A matching local cache never suppresses this check. Failed startup syncs retry after one minute and then five minutes.
+
+Look for `Camelot Streaming v13: /stream and !stream handlers loaded.` and `Verified 6 slash commands against Discord` in the logs. If the first line is missing, this update is not the running deployment. The `!stream` text entry does not depend on slash registration.
 
 If you would rather do it by hand, from your own machine pointing at the same
 app:
@@ -100,7 +98,7 @@ to a server ID while developing — guild commands appear instantly, global ones
 can take up to an hour the first time.
 
 If a publish fails (a bad token, Discord down), Camelot logs it and keeps
-running on the commands already registered, then tries again next boot.
+running on the commands already registered, then retries at startup and on the next boot.
 
 ---
 

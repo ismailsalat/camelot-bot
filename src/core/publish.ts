@@ -4,77 +4,62 @@ import { buildCommands } from './commands.js';
 import { meta } from '../db/index.js';
 import { log } from '../logger.js';
 
-/**
- * Publishes the slash commands at boot, but only when they have actually
- * changed.
- *
- * Registration used to be a separate script. On a host where you cannot easily
- * run a one-off command, that meant a new command simply never appeared and
- * the only symptom was its absence — nothing in the logs, nothing broken, just
- * a command that wasn't there. So the bot now checks its own work.
- *
- * The fingerprint is of the full payload, not the names, so adding an option
- * to an existing command republishes too. Unchanged deployments make no API
- * call at all, which keeps restarts clear of Discord's daily limit on global
- * command writes.
- */
-
 const KEY = 'commands.fingerprint';
-
-export interface PublishResult {
-  published: boolean;
-  count: number;
-  reason: 'unchanged' | 'changed' | 'first-run' | 'failed';
+export interface PublishResult {published:boolean;count:number;reason:'unchanged'|'changed'|'first-run'|'failed'}
+type CommandRest=Pick<REST,'get'|'put'|'post'>;
+function fingerprint(payload:unknown,scope:string):string{
+  return createHash('sha256').update(`${scope}\n${JSON.stringify(payload)}`).digest('hex').slice(0,32);
+}
+function option(o:any):unknown{
+  return {type:o.type,name:o.name,description:o.description,required:o.required??false,
+    options:(o.options??[]).map(option),choices:o.choices??[],autocomplete:o.autocomplete??false,
+    channel_types:o.channel_types??[],min_value:o.min_value??null,max_value:o.max_value??null,
+    min_length:o.min_length??null,max_length:o.max_length??null};
+}
+function command(c:any,guild=false){
+  return {type:c.type??1,name:c.name,description:c.description,default_member_permissions:c.default_member_permissions??null,
+    dm_permission:guild?false:c.dm_permission??true,options:(c.options??[]).map(option)};
+}
+export function commandsMatch(remote:any[],desired:any[],guild=false):boolean{
+  const normalize=(rows:any[])=>rows.map(c=>command(c,guild)).sort((a,b)=>a.name.localeCompare(b.name)||a.type-b.type);
+  return JSON.stringify(normalize(remote))===JSON.stringify(normalize(desired));
 }
 
-function fingerprint(payload: unknown, scope: string): string {
-  return createHash('sha256').update(`${scope}\n${JSON.stringify(payload)}`).digest('hex').slice(0, 32);
-}
-
-export async function publishCommands(options: {
-  clientId: string;
-  token: string;
-  devGuildId?: string;
-}): Promise<PublishResult> {
-  const body = buildCommands().map((command) => command.toJSON());
-  const scope = options.devGuildId ? `guild:${options.devGuildId}` : 'global';
-  const next = fingerprint(body, scope);
-  const previous = meta.get(KEY);
-
-  if (previous === next) {
-    log.debug(`Slash commands unchanged (${body.length}).`);
-    return { published: false, count: body.length, reason: 'unchanged' };
-  }
-
-  const rest = new REST({ version: '10' }).setToken(options.token);
-  const names = body.map((command) => command.name).join(', ');
-
-  try {
-    if (options.devGuildId) {
-      await rest.put(Routes.applicationGuildCommands(options.clientId, options.devGuildId), { body });
-      // Clear globals so a command cannot linger in two places at once.
-      await rest.put(Routes.applicationCommands(options.clientId), { body: [] });
-      log.info(`Published ${body.length} command(s) to guild ${options.devGuildId}: ${names}`);
-    } else {
-      await rest.put(Routes.applicationCommands(options.clientId), { body });
-      log.info(`Published ${body.length} command(s) globally: ${names}`);
+/** Read Discord on boot. A local fingerprint alone cannot prove a command exists.
+ * A guild-scoped /stream provides prompt visibility alongside the global set. */
+export async function publishCommands(options:{clientId:string;token:string;devGuildId?:string;guildIds?:string[];rest?:CommandRest}):Promise<PublishResult>{
+  const body=buildCommands().map(c=>c.toJSON());
+  const scope=options.devGuildId?`guild:${options.devGuildId}`:'global';
+  const next=fingerprint(body,scope),previous=meta.get(KEY);
+  const rest=options.rest??new REST({version:'10',timeout:15000,retries:1}).setToken(options.token);
+  const route=options.devGuildId?Routes.applicationGuildCommands(options.clientId,options.devGuildId):Routes.applicationCommands(options.clientId);
+  let published=false,failed=false;
+  try{
+    const remote=await rest.get(route) as any[];
+    if(!commandsMatch(remote,body,!!options.devGuildId)){
+      await rest.put(route,{body});published=true;
+      log.info(`Published ${body.length} commands to ${scope}: ${body.map(c=>c.name).join(', ')}`);
     }
-    // Written only after Discord has accepted them, so a failed publish is
-    // retried on the next boot rather than remembered as done.
-    meta.set(KEY, next);
-    return { published: true, count: body.length, reason: previous === null ? 'first-run' : 'changed' };
-  } catch (error) {
-    // Not fatal: the commands already registered keep working, and the next
-    // boot tries again.
-    log.error('Could not publish slash commands — existing ones still work', error);
-    return { published: false, count: body.length, reason: 'failed' };
+    // Keep existing globals in development mode: other servers may use them.
+    meta.set(KEY,next);
+  }catch(error){failed=true;log.error('Could not sync slash commands. !stream remains available; retrying at startup.',error)}
+  const stream=body.find(c=>c.name==='stream')!;
+  const guilds=options.devGuildId?[]:[...new Set(options.guildIds??[])];
+  for(const guildId of guilds){
+    try{
+      const guildRoute=Routes.applicationGuildCommands(options.clientId,guildId);
+      const remote=await rest.get(guildRoute) as any[];
+      const current=remote.filter(c=>c.name==='stream'&&(c.type??1)===1);
+      if(!commandsMatch(current,[stream],true)){
+        // Upsert just /stream; preserve unrelated server commands and permissions.
+        await rest.post(guildRoute,{body:stream});published=true;
+        log.info(`Registered /stream in server ${guildId}. !stream is also available.`);
+      }
+    }catch(error){failed=true;log.error(`Could not register /stream in server ${guildId}; use !stream.`,error)}
   }
+  if(!failed)log.info(`Verified ${body.length} slash commands against Discord. Streaming fallback: !stream.`);
+  return {published,count:body.length,reason:failed?'failed':published?(previous===null?'first-run':'changed'):'unchanged'};
 }
-
-/** Exposed so a test can assert the fingerprint moves when the commands do. */
-export function commandFingerprint(devGuildId?: string): string {
-  return fingerprint(
-    buildCommands().map((command) => command.toJSON()),
-    devGuildId ? `guild:${devGuildId}` : 'global',
-  );
+export function commandFingerprint(devGuildId?:string):string{
+  return fingerprint(buildCommands().map(c=>c.toJSON()),devGuildId?`guild:${devGuildId}`:'global');
 }

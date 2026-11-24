@@ -1,36 +1,15 @@
-/**
- * Publishes the slash commands. Because the list comes from the registry, a
- * command removed from the code disappears from Discord on the next run —
- * `put` replaces the whole set rather than adding to it.
- *
- *   npm run register         (dev)
- *   npm run register:prod    (after npm run build)
- */
-import { REST, Routes } from 'discord.js';
-import { loadEnv } from '../env.js';
-import { buildCommands } from '../core/commands.js';
-import { log, setLogLevel } from '../logger.js';
-
-async function main(): Promise<void> {
-  const env = loadEnv();
-  setLogLevel(env.logLevel);
-
-  const rest = new REST({ version: '10' }).setToken(env.token);
-  const body = buildCommands().map((command) => command.toJSON());
-
-  if (env.devGuildId) {
-    await rest.put(Routes.applicationGuildCommands(env.clientId, env.devGuildId), { body });
-    log.info(`Registered ${body.length} command(s) to guild ${env.devGuildId}: ${body.map((c) => c.name).join(', ')}`);
-    // Clear any globals left over from an earlier layout.
-    await rest.put(Routes.applicationCommands(env.clientId), { body: [] });
-    log.info('Cleared global commands (dev guild mode).');
-  } else {
-    await rest.put(Routes.applicationCommands(env.clientId), { body });
-    log.info(`Registered ${body.length} command(s) globally: ${body.map((c) => c.name).join(', ')}`);
-  }
+import {REST,Routes} from 'discord.js';
+import {loadEnv} from '../env.js';
+import {openDatabase} from '../db/index.js';
+import {publishCommands} from '../core/publish.js';
+import {log,setLogLevel} from '../logger.js';
+async function main(){
+  const env=loadEnv();setLogLevel(env.logLevel);openDatabase(env.databasePath);
+  const rest=new REST({version:'10'}).setToken(env.token);
+  const app=await rest.get(Routes.oauth2CurrentApplication()) as {id:string};
+  const guilds=await rest.get(Routes.userGuilds(),{query:new URLSearchParams({limit:'200'})}) as Array<{id:string}>;
+  const result=await publishCommands({clientId:app.id,token:env.token,devGuildId:env.devGuildId,guildIds:guilds.map(g=>g.id)});
+  if(result.reason==='failed')process.exitCode=1;
+  else log.info(`Verified ${result.count} slash commands. /stream and !stream are ready in the updated code.`);
 }
-
-main().catch((error) => {
-  log.error('Command registration failed', error);
-  process.exit(1);
-});
+main().catch(error=>{log.error('Command registration failed',error);process.exitCode=1});
