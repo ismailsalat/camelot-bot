@@ -32,14 +32,15 @@ test('a gap in the sources is explained, not silently mapped to another episode'
   assert.equal(gappy[parseEpisodeInput('9',gappy,0)]!.number,9);
 });
 
-test('the panel has Go to episode and skip buttons, and the skips need a known duration',()=>{
+test('the panel has Go to episode and Skip intro (the 10 s / 30 s buttons are gone), and skipping needs a known duration',()=>{
   const base={id:'s',guild:'g',channel:'c',owner:'u',title:{id:'x',provider:'megaplay',title:'Dragon Ball Z'},episodes:dbz,episode:5,sources:['megaplay'],source:'auto',lang:'dub',phase:'playing',position:30,duration:1400,changed:Date.now(),note:''} as Session;
   const find=(s:Session)=>{const out:any[]=[];const walk=(n:any)=>{if(!n)return;if(n.custom_id||n.data?.custom_id)out.push(n.data??n);for(const k of Object.values(n.data??n))if(typeof k==='object')walk(k)};walk(panel(s,0).toJSON());return out};
   const all=find(base).filter(b=>/goep|skipb|skipf|skipop/.test(b.custom_id||''));
-  assert.deepEqual(all.map(b=>b.custom_id.split(':')[2]).sort(),['goep','skipb','skipf','skipop']);
+  assert.deepEqual(all.map(b=>b.custom_id.split(':')[2]).sort(),['goep','skipop']);
   assert.ok(all.every(b=>!b.disabled));
   const idle=find({...base,phase:'idle',duration:null}).filter(b=>/skip/.test(b.custom_id||''));
-  assert.ok(idle.length===3&&idle.every(b=>b.disabled));
+  assert.ok(idle.length===1&&idle.every(b=>b.disabled));
+  assert.equal(find(base).filter(b=>/skipb|skipf/.test(b.custom_id||'')).length,0);
 });
 
 import {StallWatch} from '../streaming/stall.js';

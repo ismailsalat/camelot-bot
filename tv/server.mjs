@@ -22,7 +22,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import os from 'node:os';
 
-const VERSION='0.15.0';
+const VERSION='0.16.0';
 const DIR=resolve(fileURLToPath(new URL('.',import.meta.url)));
 const INTERNAL=process.env.CAMELOT_INTERNAL==='1';
 const CLOUD=!INTERNAL&&Boolean(process.env.RAILWAY_ENVIRONMENT||process.env.CAMELOT_BIND_ALL);
@@ -268,6 +268,53 @@ async function loadTitle(selection){
    entity:{key:entity.key,title:shownName(entity),year:entity.year,format:entity.format,total:entity.total,status:entity.status},
    rejected:verified.rejected.map(r=>({provider:r.provider,title:r.title,count:r.count,reason:r.reason})),report:verified.report};
 }
+// The on-stream countdown and the source check run at the same time. They meet here: the episode starts when the countdown ends.
+const countdowns=new Map();
+function countdownFor(id){
+  let d=countdowns.get(id);
+  if(!d){let resolve;const promise=new Promise(r=>{resolve=r});d={promise,resolve};countdowns.set(id,d);setTimeout(()=>countdowns.delete(id),90000).unref?.()}
+  return d;
+}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const COUNTDOWN_SECONDS=5;
+/** Search sources and the catalogue and return one row per real anime. Also used to rebuild a title after the TV service restarted. */
+async function runSearch(typedQuery,provider='all'){
+  const typed=String(typedQuery||'').trim().slice(0,80);
+  const q=expandQuery(typed);   // hxh -> hunter x hunter, jjk -> jujutsu kaisen, ...
+  if(q.length<2)throw new Error('Type at least 2 characters');
+  // Content providers are independent from the metadata catalog. A metadata hit is NOT playable.
+  const [sources,meta]=await Promise.all([
+    provider==='catalog'?Promise.resolve({results:[],failures:[]}):searchCatalog(q,provider).catch(()=>({results:[],failures:[{provider:'anime-sdk',reason:'provider engine unavailable'}]})),
+    provider==='all'||provider==='catalog'?searchAnimeCatalog(q):Promise.resolve({results:[],source:null,errors:[]})
+  ]);
+  // One row per real anime (catalogue entity). Provider hits attach to the entity they really are; remakes that share a name
+  // stay separate rows with their year. Movies, OVAs and specials come after the TV series.
+  const entities=meta.results.map(makeEntity);
+  const decisions=attachCandidates(entities,sources.results);
+  const built=searchRows(entities,q,20);
+  const results=built.map(({entity:e,row:out})=>{
+    cachedSet(`entity:${e.key}`,e,ENTITY_TTL);cachedSet(`entityOf:${out.provider}:${out.id}`,e.key,ENTITY_TTL);cachedSet(`media:${out.provider}:${out.id}`,out,ENTITY_TTL);
+    return out;
+  });
+  const unmatched=decisions.filter(d=>d.confirm==='own-entity').length;
+  log('info',`Anime search "${q}": ${meta.results.length} catalogue titles, ${sources.results.length} source listings (${sources.failures.length} provider errors${unmatched?`, ${unmatched} not in the catalogue`:''}) -> ${results.length} entries`);
+  for(const {entity:e} of built.slice(0,3))log('info',`  ${displayTitle(e,entities)} [${e.format||'?'} ${e.year||'?'} ${e.total||'?'} eps]: ${e.candidates.length?e.candidates.map(c=>`${c.provider}(${c.confirm})`).join(', '):'no sources found'}`);
+  if(!results.length){
+    const detail=[...sources.failures.map(f=>`${f.provider}: ${f.reason}`),...meta.errors].join('; ');
+    log('warning',`Search returned nothing. ${detail||'No matching titles from configured providers'}`);
+  }
+  return {results,failures:sources.failures,catalogErrors:meta.errors,sourceCount:sources.results.length,catalogCount:meta.results.length,catalogSource:meta.source};
+}
+/** A title the bot remembers from before a restart: search again by name and find the same real anime. */
+async function rehydrate(provider,id,title,entityKey){
+  const found=await runSearch(stripYear(title||''),'all');
+  const norm=t=>String(t||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
+  const row=found.results.find(r=>entityKey&&r.entity===entityKey)||found.results.find(r=>r.id===id&&r.provider===provider)||found.results.find(r=>norm(r.title)===norm(title));
+  if(!row)throw new Error('That title is unavailable right now. Use Find anime.');
+  // The bot still holds the old provider id; make it resolve to the same anime too.
+  cachedSet(`media:${provider}:${id}`,{...row,provider,id},ENTITY_TTL);cachedSet(`entityOf:${provider}:${id}`,row.entity,ENTITY_TTL);
+  return row;
+}
 let playBusy=false;
 let playGeneration=0; // Stop requests can abort an in-progress episode verification.
 const json=(res,status,data)=>{const s=JSON.stringify(data);res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Content-Length':Buffer.byteLength(s),'Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(s)};
@@ -316,39 +363,17 @@ const server=http.createServer(async(req,res)=>{
    if(path==='/api/state'&&req.method==='GET'){const snapshot=state();if(role==='bridge'){delete snapshot.logs;delete snapshot.account;delete snapshot.lastError;}return json(res,200,snapshot);}
    if(path==='/api/providers'&&req.method==='GET')return json(res,200,{providers:[...(await getProviders()).keys()]});
    if(path==='/api/search'&&req.method==='GET'){
-     const typed=(url.searchParams.get('q')||'').trim().slice(0,80);
-     const q=expandQuery(typed);   // hxh -> hunter x hunter, jjk -> jujutsu kaisen, ...
-     const provider=url.searchParams.get('provider')||'all';
-     if(q.length<2)throw new Error('Type at least 2 characters');
-     // Content providers are independent from the metadata catalog. A metadata hit is NOT playable.
-     // Search both concurrently, but keep clear status markers in the response.
-     const [sources,meta]=await Promise.all([
-       provider==='catalog'?Promise.resolve({results:[],failures:[]}):searchCatalog(q,provider).catch(e=>({results:[],failures:[{provider:'anime-sdk',reason:'provider engine unavailable'}]})),
-       provider==='all'||provider==='catalog'?searchAnimeCatalog(q):Promise.resolve({results:[],source:null,errors:[]})
-     ]);
-     // One row per real anime (catalogue entity). Provider hits attach to the entity they really are; remakes that share a name
-     // stay separate rows with their year. Movies, OVAs and specials come after the TV series.
-     const entities=meta.results.map(makeEntity);
-     const decisions=attachCandidates(entities,sources.results);
-     const built=searchRows(entities,q,20);const ranked=built.map(x=>x.entity);
-     const results=built.map(({entity:e,row:out})=>{
-       cachedSet(`entity:${e.key}`,e,ENTITY_TTL);cachedSet(`entityOf:${out.provider}:${out.id}`,e.key,ENTITY_TTL);cachedSet(`media:${out.provider}:${out.id}`,out,ENTITY_TTL);
-       return out;
-     });
-     log('info',`Anime search "${q}": ${meta.results.length} catalogue titles, ${sources.results.length} source listings (${sources.failures.length} provider errors) -> ${results.length} entries`);
-     for(const e of ranked.slice(0,6))log('info',`  ${displayTitle(e,entities)} [${e.format||'?'} ${e.year||'?'} ${e.total||'?'} eps]: ${e.candidates.length?e.candidates.map(c=>`${c.provider}(${c.confirm})`).join(', '):'no sources found'}`);
-     for(const d of decisions.filter(d=>d.confirm==='own-entity'))log('info',`  not in the catalogue: ${d.provider} "${String(d.title).slice(0,40)}" (${d.note})`);
-     if(!results.length){
-       const detail=[...sources.failures.map(f=>`${f.provider}: ${f.reason}`),...meta.errors].join('; ');
-       log('warning',`Search returned nothing. ${detail||'No matching titles from configured providers'}`);
-     }
-     return json(res,200,{results,failures:sources.failures,catalogErrors:meta.errors,
-       sourceCount:sources.results.length,catalogCount:meta.results.length,catalogSource:meta.source});
+     return json(res,200,await runSearch(url.searchParams.get('q')||'',url.searchParams.get('provider')||'all'));
    }
    if(path==='/api/episodes'&&req.method==='GET'){
      const p=url.searchParams.get('provider')||'',id=url.searchParams.get('id')||'';
-     const selection=cachedGet(`media:${p}:${id}`);
-     if(!selection)throw new Error('Search for this anime first');
+     let selection=cachedGet(`media:${p}:${id}`);
+     if(!selection){
+       // After a restart the cache is empty. If the bot sent the title it remembers, rebuild from a fresh search.
+       const title=(url.searchParams.get('title')||'').slice(0,125);
+       if(!title)throw new Error('Search for this anime first');
+       selection=await rehydrate(p,id,title,(url.searchParams.get('entity')||'').slice(0,80));
+     }
      if(url.searchParams.get('refresh')==='1'){
        for(const key of [...cache.keys()])if(/^(matches:|source-episodes:|availability:|verified:)/.test(key))cache.delete(key);
      }
@@ -367,6 +392,20 @@ const server=http.createServer(async(req,res)=>{
      const token=(CLOUD?process.env.CAMELOT_STREAMER_TOKEN:b.token)||worker.token;
      const guild=(CLOUD?process.env.CAMELOT_GUILD_ID:b.guild)||worker.guild;
      workerStart(token,guild);return json(res,202,{ok:true,message:'Connecting to Discord'});
+   }
+   if(path==='/api/countdown'&&req.method==='POST'){
+     const b=await body(req);
+     const id=String(b.id||'').slice(0,40),channel=String(b.channel||'');
+     const d=countdownFor(id);
+     try{
+       if(!worker.ready)throw new Error('Connect the streamer before the countdown');
+       if(!worker.channels.some(c=>c.id===channel))throw new Error('Select a valid voice channel');
+       await commands.request({op:'countdown',channel});
+       const endsAt=Date.now()+COUNTDOWN_SECONDS*1000;
+       timeline.record('countdown_started',{cid:currentCid,ends_in_ms:COUNTDOWN_SECONDS*1000});
+       d.resolve(endsAt);
+       return json(res,202,{ok:true,endsAt});
+     }catch(e){d.resolve(0);throw e}
    }
    if(['/api/play','/api/check'].includes(path)&&req.method==='POST'){
      const checkOnly=path==='/api/check';
@@ -437,12 +476,20 @@ const server=http.createServer(async(req,res)=>{
            }
          },
          discard:discardPrepared,
-         probe:(mediaUrl,headers,isHLS,source)=>preflightVideo(mediaUrl,headers,35000,{isHLS,subtitlePath:source.subtitlePath,shouldStop:()=>generation!==playGeneration||Date.now()>deadline}),
+         probe:(mediaUrl,headers,isHLS,source)=>{
+           // The size/duration lookup and the lighter-stream pick only need the URL, so they run while the frame check runs
+           // instead of after it (that wait was ~3 s per episode start).
+           if(!checkOnly){
+             source.metaPromise=probeSource(source);
+             source.variantPromise=isHLS&&!process.env.STREAM_NO_VARIANT?chooseVariantUrl(source.url,source.headers,{target:b.quality==='1080p'?1080:720}):Promise.resolve(null);
+           }
+           return preflightVideo(mediaUrl,headers,35000,{isHLS,subtitlePath:source.subtitlePath,shouldStop:()=>generation!==playGeneration||Date.now()>deadline});
+         },
          shouldStop:()=>generation!==playGeneration||Date.now()>deadline,
          onProgress:msg=>log(/unavailable|failed|no video|HTTP|missing|timed out|Ambiguous/i.test(msg)?'warning':'info',msg),
          onSuccess:async(source,entry)=>{
            if(checkOnly){await discardPrepared(source);return;}
-           const {duration,height,audio}=await probeSource(source);
+           const {duration,height,audio}=await (source.metaPromise||probeSource(source));
            maxHeight=height;
            if(audio===false){log('warning','This source reports no audio track; the stream may be silent. Trying another source with sound is recommended.');timeline.record('missing_audio',{cid,gen:generation,provider:entry?.provider})}
            // 1080p only when the source really has it; 720p is the default and the safe choice.
@@ -452,10 +499,16 @@ const server=http.createServer(async(req,res)=>{
            worker.duration=duration;worker.position=Number(b.position)||0;worker.failReason='';worker.status='starting';
            timeline.record('worker_play_sent',{cid,gen:generation,quality,duration_known:duration!==null,height:height||null});
            // Send the stream that matches the picture size, not the biggest one the playlist offers (less to download and decode).
-           const pick=source.isHLS&&!process.env.STREAM_NO_VARIANT?await chooseVariantUrl(source.url,source.headers,{target:quality==='1080p'?1080:720}):null;
+           const pick=quality===(b.quality==='1080p'?'1080p':'720p')?await (source.variantPromise||Promise.resolve(null)):null;
            const playUrl=pick?.url||source.url;
            if(pick){log('info',`Video stream: using the ${pick.height}p variant (${(pick.bandwidth/1e6).toFixed(1)} Mbit/s) of ${pick.of.join('/')}p for a ${quality} picture`);timeline.record('variant_chosen',{cid,gen:generation,height:pick.height,bandwidth:pick.bandwidth,of:pick.of})}
            worker.sourceUrls={master:{url:source.url,headers:source.headers,isHLS:source.isHLS},variant:pick?{url:pick.url}:null,current:playUrl};
+           if(b.countdownId){
+             // The episode begins when the on-stream countdown reaches zero (it ran while the source was being checked).
+             const endsAt=await Promise.race([countdownFor(String(b.countdownId).slice(0,40)).promise,sleep(8000).then(()=>0)]);
+             while(endsAt&&Date.now()<endsAt&&generation===playGeneration&&Date.now()<deadline)await sleep(Math.min(100,endsAt-Date.now()));
+             if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
+           }
            await commands.request({op:'play',cid,gen:generation,duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:playUrl,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);

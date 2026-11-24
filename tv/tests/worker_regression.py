@@ -36,6 +36,29 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[0]['quality'],'1080p');self.assertEqual(seen[0]['subtitlePath'],'/tmp/a.ass');self.assertEqual(seen[0]['position'],60)
         await bot.seek({'position':90})                      # a plain seek keeps whatever stream is active
         self.assertEqual(seen[1]['url'],'https://cdn.example.com/1080/i.m3u8')
+    async def test_countdown_clip_is_a_slate_that_plays_once_and_never_counts_as_an_episode(self):
+        self.assertTrue(Path(worker.COUNTDOWN).is_file(),'the pre-rendered 5-4-3-2-1 clip ships with the worker')
+        self.assertIn(worker.COUNTDOWN,worker.SLATES);self.assertIn(worker.STANDBY,worker.SLATES)
+        bot=self.make_bot();bot.job={'duration':1400,'url':'https://cdn.example.com/a.m3u8'}
+        seen=[]
+        async def play(job):seen.append(job)
+        bot._play=play
+        await bot.countdown({'channel':'123456789012345678'})
+        self.assertEqual(seen[0]['url'],worker.COUNTDOWN);self.assertEqual(seen[0]['channel'],'123456789012345678')
+        self.assertEqual(bot.job['url'],'https://cdn.example.com/a.m3u8','the countdown does not replace the episode that is loading')
+        self.assertNotIn(worker.COUNTDOWN,[worker.STANDBY],'only the standby screen loops')
+    async def test_countdown_op_is_routed_by_the_control_loop(self):
+        bot=self.make_bot();reader=asyncio.StreamReader();bot.input=reader
+        reader.feed_data(b'{"op":"countdown","channel":"123456789012345678","requestId":"7"}\n')
+        got=[];original=worker.emit;worker.emit=lambda op,**fields:got.append({'event':op,**fields})
+        async def countdown(job):got.append(('countdown',job['channel']))
+        bot.countdown=countdown
+        task=asyncio.create_task(bot.read_controls())
+        try:
+            await asyncio.sleep(.05)
+            self.assertIn(('countdown','123456789012345678'),got);self.assertIn({'event':'ack','requestId':'7','ok':True},got)
+        finally:
+            task.cancel();await asyncio.gather(task,return_exceptions=True);worker.emit=original
     async def test_end_cleanup_cannot_overlap_next_play(self):
         bot=self.make_bot();entered=asyncio.Event();finish=asyncio.Event();order=[]
         async def stop(*_a):

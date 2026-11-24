@@ -4,7 +4,7 @@ import {ActionRowBuilder,AttachmentBuilder,ChannelType,MessageFlags,escapeMarkdo
 import {getSettings,setByPath} from '../db/settings.js';
 import {isAdmin} from '../core/permissions.js';
 import {NO_MENTIONS} from '../util/mentions.js';
-import {V2_FLAGS,V2_PUBLIC} from '../core/ui.js';
+import {V2_PUBLIC} from '../core/ui.js';
 import {log} from '../logger.js';
 import {Bridge,type WorkerState} from './bridge.js';
 import {botTimeline} from './timeline.js';
@@ -20,7 +20,7 @@ import {inputModal,panel,settingsCard} from './ui.js';
 const STALL_WINDOW_MS=12000;
 type Waiter={guild:string;user:string;channel:string};
 /** Buttons and menus that live on the main panel; only the newest panel message may use them. */
-const PANEL_OPS=new Set(['prev','next','stop','play','seek','goep','skipb','skipf','skipop','epsel','season','quality','search','lang','lineup','source']);
+const PANEL_OPS=new Set(['prev','next','stop','play','seek','goep','skipop','epsel','season','quality','search','lang','lineup','source']);
 /** Queue actions anyone in the voice channel may use (removing and clearing still need the controller). */
 const SHARED_OPS=new Set(['lineup','qadd','qaddInput','qpick']);
 export class Streaming {
@@ -56,7 +56,7 @@ export class Streaming {
   private lastRejoin=0;
   private autoToken=0;
   private lastStatusLog=0;
-  /** Milliseconds per countdown step (tests set 0). */
+  /** Non-zero turns the on-stream countdown on (tests set 0). */
   countdownMs=1000;
   private searchResults=new Map<string,{owner:string;session:string;rows:Title[];all:Title[];expires:number}>();
   async start(client:Client){
@@ -181,16 +181,11 @@ export class Streaming {
   private async playback(change:()=>Promise<void>){
     try{await change()}catch(error){if(!this.stopping&&!this.closed)await this.fail(error);throw error}
   }
-  /** Episode list for a title; re-searches once if the TV service restarted and forgot it. */
-  private async episodesFor(title:{provider:string;id:string;title:string}):Promise<any>{
-    const path='/api/episodes?'+new URLSearchParams({provider:title.provider,id:title.id});
-    try{return await this.bridge.call(path)}catch(error){
-      if(!(error instanceof Error)||!error.message.includes('Search for this anime first'))throw error;
-      const search=await this.bridge.call('/api/search?'+new URLSearchParams({q:title.title}));
-      const match=search.results.find((r:Title)=>r.id===title.id&&r.provider===title.provider);
-      if(!match)throw new Error('That title is unavailable right now. Use Find anime.');
-      return this.bridge.call(path);
-    }
+  /** Episode list for a title. The TV service rebuilds it from the name if it restarted and forgot the title. */
+  private async episodesFor(title:{provider:string;id:string;title:string;entity?:string}):Promise<any>{
+    const params=new URLSearchParams({provider:title.provider,id:title.id,title:title.title.slice(0,125)});
+    if(title.entity)params.set('entity',title.entity);
+    return this.bridge.call('/api/episodes?'+params);
   }
   private async load(title:Title){await this.playback(()=>this.loadTitle(title))}
   private async loadTitle(title:Title){
@@ -204,8 +199,8 @@ export class Streaming {
     s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked'&&x.accepted!==false).map((x:any)=>x.provider))];
     s.source='auto';s.actualSource=undefined;s.hd=false;s.quality='720p';s.epPage=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
   }
-  private async play(position=0,initiator:'user'|'auto'|'recovery'|'queue'='user'){this.initiator=initiator;try{await this.playback(()=>this.startEpisode(position))}finally{this.initiator='user'}}
-  private async startEpisode(position:number){
+  private async play(position=0,initiator:'user'|'auto'|'recovery'|'queue'='user',countdown=false){this.initiator=initiator;try{await this.playback(()=>this.startEpisode(position,countdown))}finally{this.initiator='user'}}
+  private async startEpisode(position:number,countdown=false){
     const s=this.session!,ep=s.episodes[s.episode];
     if(!s.title||!ep)throw new Error('Choose an anime first.');
     if(this.initiator!=='recovery')this.stalls=0;
@@ -217,24 +212,34 @@ export class Streaming {
     // service for it again re-inspected every source (~4 s). A restarted service is handled by the retry below.
     const cid=`${s.id.slice(0,4)}-${++this.playCounter}`;this.cid=cid;
     botTimeline.mark('play_requested',{cid,episode:ep.number,lang:s.lang,source:s.source,quality:s.quality||'720p',initiated_by:this.initiator});
-    const playRequest={cid,initiatedBy:this.initiator,guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position,avoid:this.avoid};this.avoid=[];
+    const countdownId=countdown?`${cid}-go`:undefined;
+    const playRequest={cid,initiatedBy:this.initiator,guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position,avoid:this.avoid,countdownId};this.avoid=[];
+    // The 5-4-3-2-1 plays on the stream while the source is checked at the same time; the episode starts when it reaches zero.
+    if(countdownId)void this.bridge.call<{endsAt:number}>('/api/countdown',{id:countdownId,channel:s.channel}).then(r=>{
+      if(this.session!==s||s.phase!=='loading')return;
+      s.countdownUntil=r.endsAt;s.note='';void this.paint();
+    }).catch(()=>{});
     let result:any;
     try{result=await this.bridge.call('/api/play',playRequest)}
     catch(error){
-      // If the streaming process itself died mid-start, every source then reports "not connected".
-      // That is not the episode's fault: reconnect the account once and try again.
-      if(!(error instanceof Error)||!/Streaming account disconnected|Streamer is not connected|Choose an anime and episode from search results first/.test(error.message))throw error;
-      log.warn('Streaming worker stopped while starting playback; reconnecting once. ('+error.message.slice(0,80)+')');
-      s.note='Reconnecting the streaming account…';await this.paint();
-      await this.prepare();
-      // Reconnecting restarts the TV service, which forgets the search it had cached; load the title again.
+      const msg=error instanceof Error?error.message:'';
+      // Two known causes, both fixed by looking the anime up again: the TV service restarted and forgot it (a redeploy), or the
+      // streaming process died mid-start (every source then reports "not connected").
+      const forgot=/Choose an anime and episode from search results first/.test(msg);
+      if(!forgot&&!/Streaming account disconnected|Streamer is not connected/.test(msg))throw error;
+      log.warn(forgot?'[stream] The TV service restarted and forgot this anime; looking it up again.':'Streaming worker stopped while starting playback; reconnecting once. ('+msg.slice(0,80)+')');
+      if(!forgot){s.note='Reconnecting the streaming account…';await this.paint();await this.prepare()}
       const loaded=await this.episodesFor(s.title);
-      const chosen=loaded.episodes.find((e:any)=>e.number===ep.number);
-      if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
-      result=await this.bridge.call('/api/play',{...playRequest,unit:chosen.id});
+      const at=loaded.episodes.findIndex((e:any)=>e.number===ep.number);
+      if(at<0)throw new Error('That episode is not listed anymore. Choose another episode.');
+      // The lookup may settle on a different provider id for the same anime; keep the panel in step with it.
+      const picked=loaded.selection||{provider:s.title.provider,id:s.title.id};
+      s.title={...s.title,...picked,poster:s.title.poster||picked.poster,family:s.title.family,season:s.title.season};
+      s.episodes=loaded.episodes;s.episode=at;
+      result=await this.bridge.call('/api/play',{...playRequest,provider:picked.provider,media:picked.id,unit:loaded.episodes[at].id});
     }
     botTimeline.mark('play_acked',{cid,provider:result.provider,quality:result.streamQuality});
-    s.actualSource=result.provider;s.subtitle=result.subtitle?.mode==='burned'?'EN subtitles':s.lang==='sub'?'no subtitles':'';s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
+    s.countdownUntil=undefined;s.actualSource=result.provider;s.subtitle=result.subtitle?.mode==='burned'?'EN subtitles':s.lang==='sub'?'no subtitles':'';s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
     this.followUp();
   }
   private async release(note='Available. Use /stream to take a turn.'){
@@ -255,7 +260,7 @@ export class Streaming {
     const detail=this.bridge.running?await this.bridge.call<WorkerState>('/api/state').catch(()=>null):null;
     await this.bridge.disconnect();
     const why=error instanceof Error?error.message.replace(/https?:\/\/\S+/g,'[source]').replace(/\s+/g,' ').slice(0,300):'unknown error';
-    this.session.phase='error';this.session.changed=Date.now();
+    this.session.countdownUntil=undefined;this.session.phase='error';this.session.changed=Date.now();
     this.session.note='Could not play this episode. Try another source or press Play to reconnect.'+(why&&why!=='unknown error'?`\nReason: ${why.slice(0,140)}`:'');
     log.warn(`Streaming playback interrupted: ${why} | worker=${detail?.status??'unreachable'} lastError=${(detail?.lastError||'-').slice(0,200)} safeMode=${detail?.safeMode??'-'} episode=${this.session.episodes[this.session.episode]?.number??'-'} source=${this.session.source}`);
     this.persist();await this.paint();
@@ -311,6 +316,10 @@ export class Streaming {
           return;
         }else if(['offline','failed'].includes(w.status)){await this.recoverLocked();return}
         else if(s.phase==='loading'&&Date.now()-s.changed>90000){await this.recoverLocked();return}
+        // While playing, the panel only changes when something visible changes. Skipping identical repaints saves Discord calls.
+        const sig=`${s.phase}|${s.episode}|${s.quality}|${s.note}|${Math.floor((s.position||0)/10)}`;
+        if(s.phase==='playing'&&sig===this.lastSig&&Date.now()-this.lastPaintAt<9000&&!this.bump&&!this.dirty)return;
+        this.lastSig=sig;this.lastPaintAt=Date.now();
         this.persist();await this.paint();
       });
     }catch{
@@ -320,6 +329,8 @@ export class Streaming {
     }finally{this.polling=false}
   }
   private streamerId?:string;
+  private lastSig='';
+  private lastPaintAt=0;
   private playCounter=0;
   private cid:string|undefined;
   private initiator:'user'|'auto'|'recovery'|'queue'='user';
@@ -373,36 +384,29 @@ export class Streaming {
     }
     return false;
   }
-  /** Count 5-4-3-2-1 in the VC chat, then start episode 1 on its own unless someone steps in. */
+  /** After picking an anime: show 5-4-3-2-1 on the stream (and a live countdown on the panel) while the source is checked, then start episode 1. */
   scheduleAutoStart(s:Session){
     const token=++this.autoToken;
     setTimeout(()=>{void this.countdown(s,token)},0);
   }
   private async countdown(s:Session,token:number){
     const valid=()=>this.autoToken===token&&this.session===s&&!!s.owner&&s.phase==='idle'&&!!s.title&&!this.closed&&!this.stopping;
-    if(!valid())return;
-    let msg:Message|null=null;
     try{
-      const ch=await this.channel();
-      const name=escapeMarkdown((s.title?.title||'').slice(0,60));
-      for(let n=5;n>=1;n--){
-        if(!valid())break;
-        const content=`**Camelot** · ${name} starts in **${n}**`;
-        try{if(ch){if(msg)await msg.edit({content,allowedMentions:NO_MENTIONS});else msg=await ch.send({content,allowedMentions:NO_MENTIONS})}}catch{}
-        if(this.countdownMs)await new Promise(r=>setTimeout(r,this.countdownMs));
-      }
-      await msg?.delete().catch(()=>{});msg=null;
-      if(!valid())return;
       // A background poll may hold the gate for a moment; wait for it rather than dropping the start.
       for(let attempt=0;attempt<10&&valid();attempt++){
         await this.gate.idle();
-        try{await this.gate.run(async()=>{if(valid()){this.retries=0;await this.play(0,'auto')}});return}
-        catch(error){if(!(error instanceof Error)||!error.message.startsWith('One moment'))throw error}
+        try{await this.gate.run(async()=>{if(valid()){this.retries=0;await this.play(0,'auto',this.countdownMs>0)}});return}
+        catch(error){if(!(error instanceof Error)||!error.message.startsWith('Still busy'))throw error}
       }
     }catch(error){
-      await msg?.delete().catch(()=>{});
       log.warn('Auto-start did not run: '+(error instanceof Error?error.message.slice(0,160):'unknown'));
     }
+  }
+  /** Private confirmation after picking an anime. */
+  private readyMessage(s:Session):string{
+    const t=s.title,langs=new Set(s.episodes.flatMap(e=>e.languages||[]));
+    const langText=[...langs].map(l=>l.toUpperCase()).join(' & ');
+    return `🎬 **${escapeMarkdown((t?.title||'Your anime').slice(0,80))}** is ready · ${s.episodes.length} episode${s.episodes.length===1?'':'s'}${langText?` · ${langText}`:''}\n⏳ A **5-4-3-2-1** countdown plays on the stream, then episode 1 starts by itself.\n⏹ Press **Stop** on the controls to cancel.`;
   }
   /** The video froze (the source stopped sending data). Move to another source at the same spot instead of waiting for a person to notice. */
   private async stallFailover(s:Session,advanced:number,elapsed:number){
@@ -435,15 +439,19 @@ export class Streaming {
   warming:Promise<void>|null=null;
   /** Log the streaming account in while the person picks an anime. Not gated, so searching never has to wait. */
   private warm(){
-    const s=this.session;if(!s||s.title||this.warming)return;
-    const still=()=>this.session===s&&!s.title&&s.phase==='idle'&&!this.closed&&!this.stopping;
+    const s=this.session;if(!s||this.warming)return;
+    // A restored session already knows its anime. Log the account in and start the standby screen right away, so that Play
+    // swaps to the countdown at once instead of first spending ~10 s opening the stream.
+    const title=s.title;
+    const still=()=>this.session===s&&s.title===title&&s.phase==='idle'&&!this.closed&&!this.stopping;
     this.warming=(async()=>{
       await this.prepare();
       if(!still())return;
       await this.bridge.call('/api/standby',{channel:s.channel});
     })().catch(async(error:unknown)=>{
-      if(this.session!==s||this.closed||this.stopping||s.title)return;
+      if(this.session!==s||this.closed||this.stopping||s.title!==title)return;
       log.warn('Streaming account could not be warmed up: '+(error instanceof Error?error.message:'unknown').slice(0,200));
+      if(title)return; // a restored session simply connects again when Play is pressed
       s.phase='error';s.changed=Date.now();s.note=error instanceof Error?error.message:'Could not connect the streaming account.';this.persist();await this.paint().catch(()=>{});
     }).finally(()=>{this.warming=null});
   }
@@ -458,8 +466,11 @@ export class Streaming {
     const custom=('customId' in i)?i.customId:'';
     if(!command&&!custom.startsWith('tv:')&&!custom.startsWith('tvs:')&&!custom.startsWith('tvr:'))return false;
     if(!i.isRepliable())return true;
-    const received=botTimeline.mark('interaction_received',{cid:this.cid,kind:command?'command':custom.split(':')[2]||custom,age_ms:Math.max(0,Date.now()-i.createdTimestamp)});
-    const reply=async(content:string)=>{const payload={content,components:[],allowedMentions:NO_MENTIONS};if(i.deferred||i.replied)await i.editReply(payload);else await i.reply({...payload,flags:MessageFlags.Ephemeral})};
+    botTimeline.mark('interaction_received',{cid:this.cid,kind:command?'command':custom.split(':')[2]||custom,age_ms:Math.max(0,Date.now()-i.createdTimestamp)});
+    // Panel buttons are acknowledged with deferUpdate (no "thinking…" message appears). Then the panel itself must never be
+    // overwritten by an error text, so errors go out as a private follow-up instead.
+    let panelAck=false;
+    const reply=async(content:string)=>{const payload={content,components:[],allowedMentions:NO_MENTIONS};if(panelAck)await i.followUp({...payload,flags:MessageFlags.Ephemeral});else if(i.deferred||i.replied)await i.editReply(payload);else await i.reply({...payload,flags:MessageFlags.Ephemeral})};
     try{
       if(!i.inCachedGuild()){await reply('Use this in the server.');return true}
       const member=i.member;
@@ -484,7 +495,7 @@ export class Streaming {
       const op=parts[2];
       if(!s.owner&&['play','search'].includes(op||'')){
         if(member.voice.channelId!==s.channel)throw new Error('Use /stream in your own voice channel.');
-        await this.gate.run(()=>this.claim(member));
+        await this.gate.wait(1500);await this.gate.run(()=>this.claim(member));
       }
       // Only the newest panel works. Anything older is removed and rejected.
       if((i.isButton()||i.isStringSelectMenu())&&PANEL_OPS.has(op||'')&&s.message&&i.message?.id&&i.message.id!==s.message){
@@ -501,7 +512,11 @@ export class Streaming {
         const config=op==='goep'?['Go to episode',`Episode ${Math.min(...nums)}–${Math.max(...nums)} (now ${s.episodes[s.episode]?.number??'-'})`,'206, e206, +5, -3 or last']:op==='search'?['Find anime','Anime name','Dr. STONE']:op==='qadd'?['Add to queue','Anime name','Dr. STONE']:['Jump to time',`Now ${clock(s.position)} of ${s.duration?clock(s.duration):'unknown'}`,'12:30, 750, +90, or -30'];
         await i.showModal(inputModal(`tv:${s.id}:${op}Input`,config[0]!,config[1]!,config[2]!));return true;
       }
-      if((i.isButton()||i.isStringSelectMenu())&&['qskip','qclear','qdel','qpick'].includes(op||''))await i.deferUpdate();
+      // Playback controls on the panel change the panel itself, so they need no private "thinking…" message at all.
+      const quick=['play','prev','next','epsel','season','quality','lang','skipop','goepInput','episodeInput','seekInput'].includes(op||'')
+        &&(i.isButton()||i.isStringSelectMenu()||(i.isModalSubmit()&&Boolean((i as any).isFromMessage?.())));
+      if(quick){await (i as any).deferUpdate();panelAck=true}
+      else if((i.isButton()||i.isStringSelectMenu())&&['qskip','qclear','qdel','qpick'].includes(op||''))await i.deferUpdate();
       else await i.deferReply({flags:MessageFlags.Ephemeral});
       botTimeline.mark('interaction_acked',{cid:this.cid,kind:op});
       if(op==='stop'||op==='release'){
@@ -516,6 +531,9 @@ export class Streaming {
         }finally{this.stopping=false}
         return true;
       }
+      // A long action (finding a source, loading an anime) may still be running. Short waits are absorbed; beyond that an extra click
+      // on the panel is simply ignored instead of stacking up "busy" messages.
+      if(!(await this.gate.wait(1500))){if(panelAck)return true;throw new Error('Still busy with the last request. Try again in a few seconds.')}
       await this.gate.run(async()=>{
         if(this.session!==s)throw new Error('Session changed. Use /stream again.');
         if(SHARED_OPS.has(op||'')){if(!s.owner||member.voice.channelId!==s.channel)throw new Error('Join the active voice channel to use the queue.')}
@@ -551,7 +569,7 @@ export class Streaming {
         if(i.isStringSelectMenu()&&op==='pick'){
           const found=this.searchResults.get(parts[3]!);if(!found||found.session!==s.id||found.owner!==member.id||found.expires<Date.now())throw new Error('Search expired. Use Find anime again.');
           const title=found.rows[Number(i.values[0])];if(!title)throw new Error('Choose a listed title.');
-          await this.load(withFamily(title,found.rows,found.all));this.scheduleAutoStart(s);await reply('Starting automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');return;
+          await this.load(withFamily(title,found.rows,found.all));this.scheduleAutoStart(s);await reply(this.readyMessage(this.session!));return;
         }
                 if(op==='next'||op==='prev'||op==='episodeInput'||op==='goepInput'){
           // Typed episode numbers are checked first so the person is told what exists ("the last episode is 291") instead of nothing happening.
@@ -570,23 +588,22 @@ export class Streaming {
           const family=s.title?.family||[];const pick=family[Number(i.values[0])];
           if(!pick||!s.title)throw new Error('That season is not available.');
           await this.load({...pick,family});this.scheduleAutoStart(s);
-          return await reply('Starting that season automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');
+          return await reply(this.readyMessage(this.session!));
         }else if(op==='quality'){
           if(!['playing','paused'].includes(s.phase)||!s.hd)throw new Error('1080p is only offered while a video that supports it is playing.');
           const state=await this.bridge.call<WorkerState>('/api/state');
           if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
           const want=s.quality==='1080p'?'720p':'1080p';
           await this.playback(async()=>{await this.bridge.call('/api/seek',{position:Math.max(0,state.position||s.position),quality:want});s.quality=want;s.position=state.position||s.position});
-        }else if(op==='skipb'||op==='skipf'||op==='skipop'){
+        }else if(op==='skipop'){
           if(!['playing','paused'].includes(s.phase))throw new Error('Press Play before skipping.');
           const state=await this.bridge.call<WorkerState>('/api/state');
           if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
           s.position=state.position;s.duration=state.duration;
           if(!s.duration)throw new Error('The source has not reported a duration, so skipping is unavailable.');
-          const delta=op==='skipb'?-10:op==='skipf'?30:85;
           const left=s.duration-s.position;
-          if(delta>0&&left<=delta+3)throw new Error(`Only ${clock(Math.max(0,left))} left in this episode. Press Next for the next one.`);
-          const n=Math.max(0,s.position+delta);
+          if(left<=88)throw new Error(`Only ${clock(Math.max(0,left))} left in this episode. Press Next for the next one.`);
+          const n=s.position+85;
           await this.playback(async()=>{await this.bridge.call('/api/seek',{position:n});s.position=n});
         }else if(op==='seekInput'){
           if(!['playing','paused'].includes(s.phase))throw new Error('Press Play before changing the time.');
@@ -612,10 +629,12 @@ export class Streaming {
         }
         this.persist();await this.paint();
         // The panel itself shows what changed, so a successful press leaves no private message behind.
-        if(i.isModalSubmit()||i.isStringSelectMenu()||i.isButton())await i.deleteReply().catch(()=>{});else await reply('Streaming controls updated.');
+        if(panelAck){/* the panel already shows the change; nothing was sent privately */}
+        else if(i.isModalSubmit()||i.isStringSelectMenu()||i.isButton())await i.deleteReply().catch(()=>{});else await reply('Streaming controls updated.');
       });
     }catch(error){
       const message=error instanceof Error?error.message:'Something went wrong. Try again.';
+      if(panelAck&&message.startsWith('Still busy'))return true;
       // Validation failures must not stop playback for everyone else.
       try{await reply(message)}catch{}
     }

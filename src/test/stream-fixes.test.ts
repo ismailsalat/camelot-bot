@@ -82,22 +82,37 @@ test('a background warm-up and a later connect share one connection attempt',asy
   await b.connect('g','t');assert.equal(started,2);
 });
 
-test('after a crash the TV service restarts empty: the title is searched again before the retry plays',async()=>{
-  const tv:any=new Streaming();const calls:string[]=[];let restarted=false,plays=0;
-  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}};
+test('after a crash or redeploy the TV service restarts empty: the episode list is rebuilt from the title and the retry plays the rebuilt id',async()=>{
+  const tv:any=new Streaming();const calls:string[]=[];let restarted=false,plays=0;const asked:any[]=[];const played:any[]=[];
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'old-id',provider:'catalog',title:'Dr. Stone',entity:'drstone:2019'}};
   tv.paint=async()=>{};tv.persist=()=>{};
   tv.prepare=async()=>{calls.push('prepare');if(plays===1)restarted=true};
-  tv.bridge={call:async(path:string)=>{
-    if(path.startsWith('/api/episodes')){calls.push('episodes');if(restarted&&!calls.includes('search'))throw new Error('Search for this anime first');return {sources:[{status:'checked',provider:'hianime'}],episodes:[{id:'e1',number:1}]}}
-    if(path.startsWith('/api/search')){calls.push('search');return {results:[{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}]}}
-    plays++;calls.push('play');
+  tv.bridge={call:async(path:string,body:any)=>{
+    if(path.startsWith('/api/episodes')){calls.push('episodes');const q=new URLSearchParams(path.split('?')[1]);asked.push(Object.fromEntries(q));if(restarted&&!q.get('title'))throw new Error('Search for this anime first');return {selection:{provider:'hianime',id:'hianime:1'},sources:[{status:'checked',provider:'hianime'}],episodes:[{id:'new-e1',number:1}]}}
+    if(path.startsWith('/api/search'))throw new Error('the bot must not search again; the TV service rebuilds the title itself');
+    plays++;calls.push('play');played.push(body);
     if(plays===1)throw new Error('No playable video found. hianime: Streaming account disconnected.');
-    if(!calls.includes('search'))throw new Error('Choose an anime and episode from search results first');
+    if(body.media==='old-id')throw new Error('Choose an anime and episode from search results first');
     return {provider:'hianime'};
   }};
   await tv.startEpisode(0);
   assert.equal(tv.session.actualSource,'hianime');
-  assert(calls.indexOf('search')>calls.lastIndexOf('prepare'));assert(calls.indexOf('search')<calls.lastIndexOf('play'));
+  assert.deepEqual(asked.at(-1),{provider:'catalog',id:'old-id',title:'Dr. Stone',entity:'drstone:2019'});
+  assert.equal(played.at(-1).media,'hianime:1');assert.equal(played.at(-1).unit,'new-e1');
+  assert.equal(tv.session.title.id,'hianime:1');assert.equal(tv.session.title.entity,'drstone:2019','the panel keeps the verified identity');
+});
+
+test('a restored session whose TV service forgot the anime: Play rebuilds it silently, with no "last change" message',async()=>{
+  const tv:any=new Streaming();const played:any[]=[];let first=true;
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'catalog:dbz',provider:'catalog',title:'Dragon Ball Z',entity:'dbz:1989'}};
+  tv.paint=async()=>{};tv.persist=()=>{};tv.prepare=async()=>{};
+  tv.bridge={call:async(path:string,body:any)=>{
+    if(path.startsWith('/api/episodes'))return {selection:{provider:'megaplay',id:'dbz-1'},sources:[],episodes:[{id:'x1',number:1}]};
+    played.push(body);if(first){first=false;throw new Error('Choose an anime and episode from search results first')}
+    return {provider:'megaplay'};
+  }};
+  await tv.startEpisode(0);
+  assert.equal(played.length,2);assert.equal(played[1].media,'dbz-1');assert.equal(tv.session.actualSource,'megaplay');
 });
 
 test('playing an already loaded episode does not re-inspect the sources',async()=>{

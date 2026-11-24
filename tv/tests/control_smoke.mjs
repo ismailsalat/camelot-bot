@@ -20,6 +20,9 @@ for line in sys.stdin:
  time.sleep(.15)
  if job['op']=='pause':
   emit(event='ack',requestId=job.get('requestId'),ok=False,message='No active episode')
+ elif job['op']=='countdown':
+  emit(event='standby',position=0)
+  emit(event='ack',requestId=job.get('requestId'),ok=True)
  else:
   emit(event='standby',position=0)
   emit(event='ack',requestId=job.get('requestId'),ok=True)
@@ -35,8 +38,12 @@ try{
  for(let n=0;n<30;n++){if((await (await fetch(base+'/api/state',{headers})).json()).connected)break;await sleep(100)}
  const start=Date.now();assert.equal((await post('/api/standby',{channel:'222222222222222222'})).status,202);assert(Date.now()-start>=130);
  const paused=await post('/api/pause');assert(!paused.ok);assert.match((await paused.json()).error,/No active episode/);
+ // The on-stream 5-4-3-2-1: the worker is asked once, and the reply says when the countdown ends so the episode can start exactly then.
+ const t0=Date.now();const cd=await post('/api/countdown',{id:'c-1',channel:'222222222222222222'});assert.equal(cd.status,202);
+ const cdJson=await cd.json();assert(cdJson.endsAt>=t0+4900&&cdJson.endsAt<=Date.now()+5100,'the countdown lasts 5 seconds from the moment the worker confirms it');
+ const bad=await post('/api/countdown',{id:'c-2',channel:'999999999999999999'});assert(!bad.ok);assert.match((await bad.json()).error,/valid voice channel/);
  assert.equal((await post('/api/disconnect')).status,202);
- console.log('PASS: real HTTP controls wait for worker acknowledgments and return worker failures');
+ console.log('PASS: real HTTP controls wait for worker acknowledgments, return worker failures and time the on-stream countdown');
 }catch(error){console.error(output);throw error}finally{
  const exited=new Promise(r=>child.once('close',r));child.kill('SIGTERM');await Promise.race([exited,sleep(2000)]);if(child.exitCode===null)child.kill('SIGKILL');await rm(dir,{recursive:true,force:true});
 }

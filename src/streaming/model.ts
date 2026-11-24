@@ -16,6 +16,8 @@ export type Phase='idle'|'loading'|'playing'|'paused'|'offline'|'error';
 export interface Session {
   id:string;guild:string;channel:string;message?:string;owner:string|null;
   title?:Title;episodes:Episode[];episode:number;sources:string[];source:string;actualSource?:string;
+  /** When the on-stream countdown ends (ms since epoch); the panel shows a live Discord countdown until then. */
+  countdownUntil?:number;
   /** What happened to subtitles on the last start: 'burned' (English subtitles are in the picture), or the reason there are none. */
   subtitle?:string;
   lang:'sub'|'dub';phase:Phase;position:number;duration:number|null;changed:number;note:string;
@@ -47,8 +49,13 @@ export class Gate {
   private busy=false;
   private waiters:Array<()=>void>=[];
   async idle(){if(this.busy)await new Promise<void>(resolve=>this.waiters.push(resolve))}
+  /** Wait up to `ms` for the current action to finish. True when the gate is free. */
+  async wait(ms:number):Promise<boolean>{
+    if(!this.busy)return true;
+    return await Promise.race([this.idle().then(()=>true),new Promise<boolean>(r=>setTimeout(()=>r(false),ms))]);
+  }
   async run<T>(fn:()=>Promise<T>):Promise<T>{
-    if(this.busy)throw new Error('One moment, the last change is still finishing.');
+    if(this.busy)throw new Error('Still busy with the last request. Try again in a few seconds.');
     this.busy=true;try{return await fn()}finally{this.busy=false;for(const resolve of this.waiters.splice(0))resolve()}
   }
   get locked(){return this.busy}

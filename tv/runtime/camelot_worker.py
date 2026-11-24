@@ -155,6 +155,9 @@ _source_hls={}
 _source_subtitles={}
 _source_offsets={}
 STANDBY=str((Path(__file__).parent / "assets" / "standby.mp4").resolve())
+# 5-4-3-2-1 shown on the stream while the episode is being found. Plays once (no loop) and then holds its last frame.
+COUNTDOWN=str((Path(__file__).parent / "assets" / "countdown.mp4").resolve())
+SLATES=(STANDBY,COUNTDOWN)
 def _headers_ffmpeg_cmd(self):
     cmd=_original_ffmpeg_cmd(self)
     url=str(getattr(self,'_url',''))
@@ -169,7 +172,7 @@ def _headers_ffmpeg_cmd(self):
     offset=_source_offsets.get(url,0)
     if url==STANDBY:cmd[index:index]=['-stream_loop','-1']
     elif offset>0:cmd[index:index]=['-ss',str(offset)]
-    if url!=STANDBY:cmd[cmd.index('-i'):cmd.index('-i')]=['-rw_timeout','15000000']
+    if url not in SLATES:cmd[cmd.index('-i'):cmd.index('-i')]=['-rw_timeout','15000000']
     if offset and _source_subtitles.get(url) and '-vf' in cmd:
         i=cmd.index('-vf')+1
         overlay=cmd[i].split(',',1)
@@ -187,7 +190,7 @@ def _describe_cmd(cmd,url):
     info={'encoder':_flag(cmd,'-c:v'),'preset':_flag(cmd,'-preset'),'size':f'{scale.group(1)}x{scale.group(2)}' if scale else None,'scaler':scale.group(3) if scale else None,
           'bitrate':rate,'maxrate':_flag(cmd,'-maxrate'),'bufsize':_flag(cmd,'-bufsize'),'gop':_flag(cmd,'-g'),'fps':_stream_fps(),
           'threads':ENCODER.get('threads'),'threads_reason':ENCODER.get('threads_reason'),'pipe_kb':PIPE_INFO.get('applied',0)//1024 or 64,
-          'packet_pace':os.environ.get('STREAM_PACKET_PACE'),'cpu_quota_cores':diag.cpu_quota_cores(),'standby':url==STANDBY}
+          'packet_pace':os.environ.get('STREAM_PACKET_PACE'),'cpu_quota_cores':diag.cpu_quota_cores(),'standby':url in SLATES}
     STATS.fps=info['fps'];STATS.bitrate_kbps=kbps
     ENCODER.update(info)
     emit('encoder',**{**STATS.ctx,**info})
@@ -302,6 +305,7 @@ class CamelotOnline(commands.Bot):
                 if op=='play':await self.play(job)
                 elif op=='stop':await self.stop(job.get('reason') or 'user_stop',job.get('initiatedBy') or 'user')
                 elif op=='standby':await self.standby(job)
+                elif op=='countdown':await self.countdown(job)
                 elif op=='pause':await self.pause()
                 elif op=='resume':await self.resume()
                 elif op=='seek':await self.seek(job)
@@ -331,7 +335,7 @@ class CamelotOnline(commands.Bot):
     async def _play(self,job):
         url=job.get('url','')
         channel_id=str(job.get('channel',''))
-        standby=url==STANDBY
+        standby=url in SLATES
         if (not standby and not valid_url(url)) or not re.fullmatch(r'[0-9]{15,22}',channel_id):
             raise ValueError('Invalid video source or channel')
         guild=self.get_guild(GUILD_ID)
@@ -383,6 +387,10 @@ class CamelotOnline(commands.Bot):
             # risks a failed restart, so leave the running stream alone.
             if self.mode=='standby' and self.live.running_on(str(job.get('channel',''))):return
             await self._play({'url':STANDBY,'channel':job.get('channel'),'title':'Camelot TV · Loading'})
+
+    async def countdown(self,job):
+        async with self.play_lock:
+            await self._play({'url':COUNTDOWN,'channel':job.get('channel'),'title':'Camelot TV · Starting'})
 
     async def pause(self):
         async with self.play_lock:

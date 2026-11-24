@@ -22,9 +22,17 @@ test('seeking never crosses either end or guesses an unknown duration',()=>{
 test('session mutation rejects overlapping clicks and recovers after a failure',async()=>{
  const gate=new Gate();let finish!:()=>void;
  const first=gate.run(()=>new Promise<void>(r=>finish=r));
- await assert.rejects(gate.run(async()=>42),/finishing/);finish();await first;
+ await assert.rejects(gate.run(async()=>42),/Still busy/);finish();await first;
  await assert.rejects(gate.run(async()=>{throw Error('failure')}));
  assert.equal(await gate.run(async()=>42),42);
+});
+test('Gate.wait absorbs a short busy period and gives up after the limit',async()=>{
+ const gate=new Gate();let finish!:()=>void;
+ assert.equal(await gate.wait(10),true);
+ const first=gate.run(()=>new Promise<void>(r=>finish=r));
+ assert.equal(await gate.wait(20),false);
+ setTimeout(()=>finish(),20);assert.equal(await gate.wait(500),true);await first;
+ assert.equal(await gate.run(async()=>7),7);
 });
 test('token is encrypted, survives retrieval, and is bound to the server',()=>{
  const token='a'.repeat(60);saveToken('one',token);assert.equal(getToken('one'),token);assert(hasToken('one'));
@@ -102,8 +110,9 @@ test('Next changes the episode, asks worker for the new episode, and keeps its o
    throw Error('unexpected '+path);
  }};
  const interaction={customId:'tv:abc:next',isChatInputCommand:()=>false,isRepliable:()=>true,inCachedGuild:()=>true,member:member('alice'),isButton:()=>true,isModalSubmit:()=>false,isStringSelectMenu:()=>false,deferred:false,replied:false,
-   deferReply:async function(){this.deferred=true},deleteReply:async function(){this.deleted=true},editReply:async()=>{},reply:async()=>{}} as any;
+   deferReply:async function(){this.deferred=true},deferUpdate:async function(){this.deferred=true;this.updated=true},followUp:async function(){this.followed=true},deleteReply:async function(){this.deleted=true},editReply:async()=>{},reply:async()=>{}} as any;
  assert(await tv.handle(interaction));
+ assert(interaction.updated&&!interaction.deleted&&!interaction.followed,'a panel button is acknowledged silently: no private message appears or disappears');
  assert.equal(tv.session.episode,1);assert.equal(tv.session.owner,'alice');
  assert.equal(calls.find(c=>c[0]==='/api/play')[1].unit,'e2');
  assert.equal(calls.filter(c=>c[0].startsWith('/api/search')).length,0);

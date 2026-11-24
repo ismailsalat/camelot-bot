@@ -90,23 +90,27 @@ test('only the controller or an admin can use queue removal; anyone in the VC ca
  const owner=click('tv:aaaaaaaaaaaa:qclear','whatever');await tv.handle(owner.i);assert.equal(tv.session.queue.length,0);
 });
 
-test('countdown shows 5-4-3-2-1 in chat, removes itself, then starts episode 1',async()=>{
- const tv:any=new Streaming();tv.countdownMs=0;const s=fixture({phase:'idle'});tv.session=s;
- const log:string[]=[];let plays:any[]=[];
- const msg={edit:async(p:any)=>{log.push(p.content)},delete:async()=>{log.push('deleted')}};
- tv.channel=async()=>({send:async(p:any)=>{log.push(p.content);return msg}});
- tv.play=async(pos:number)=>{plays.push(pos);log.push('play')};
- const token=++tv.autoToken;await tv.countdown(s,token);
- assert.deepEqual(log.map(x=>(/\*\*(\d)\*\*/.exec(x)||[])[1]||x),['5','4','3','2','1','deleted','play']);
- assert(log[0]!.startsWith('**Camelot**'));assert.deepEqual(plays,[0]);
+test('the countdown now runs on the stream: episode 1 starts once with the countdown flag, and the chat gets no 5-4-3-2-1 messages',async()=>{
+ const tv:any=new Streaming();const s=fixture({phase:'idle'});tv.session=s;
+ const plays:any[]=[];let sent=0;
+ tv.channel=async()=>({send:async()=>{sent++;return {edit:async()=>{},delete:async()=>{}}}});
+ tv.play=async(pos:number,who:string,countdown:boolean)=>{plays.push([pos,who,countdown])};
+ await tv.countdown(s,++tv.autoToken);
+ assert.deepEqual(plays,[[0,'auto',true]]);assert.equal(sent,0);
+ tv.countdownMs=0;plays.length=0;await tv.countdown(s,++tv.autoToken);assert.deepEqual(plays,[[0,'auto',false]]);
 });
-test('countdown is cancelled by Stop, a new pick or any other control and never plays',async()=>{
- const tv:any=new Streaming();tv.countdownMs=0;const s=fixture({phase:'idle'});tv.session=s;
- let plays=0;const log:string[]=[];tv.play=async()=>{plays++};
- const msg={edit:async()=>{},delete:async()=>{log.push('deleted')}};
- tv.channel=async()=>({send:async()=>{tv.autoToken++;return msg}}); // someone presses Stop right after the first number
- await tv.countdown(s,tv.autoToken);assert.equal(plays,0);assert(log.includes('deleted'));
- s.phase='playing';const t2=tv.autoToken;tv.channel=async()=>({send:async()=>msg});await tv.countdown(s,t2);assert.equal(plays,0); // already playing: nothing to do
+test('the countdown never plays after Stop, a new pick or any other control, or when the video already runs',async()=>{
+ const tv:any=new Streaming();const s=fixture({phase:'idle'});tv.session=s;
+ let plays=0;tv.play=async()=>{plays++};
+ const stale=tv.autoToken;tv.autoToken++;await tv.countdown(s,stale);assert.equal(plays,0);
+ s.phase='playing';await tv.countdown(s,tv.autoToken);assert.equal(plays,0);
+ s.phase='idle';s.owner=null;await tv.countdown(s,tv.autoToken);assert.equal(plays,0);
+});
+test('a countdown start waits for a background poll instead of being dropped',async()=>{
+ const tv:any=new Streaming();const s=fixture({phase:'idle'});tv.session=s;let plays=0;tv.play=async()=>{plays++};
+ let free!:()=>void;const held=tv.gate.run(()=>new Promise<void>(r=>free=r));
+ const started=tv.countdown(s,++tv.autoToken);setTimeout(()=>free(),30);await held;await started;
+ assert.equal(plays,1);
 });
 
 function tickRig(session:Session,state:any){

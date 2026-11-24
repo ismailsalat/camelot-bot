@@ -68,7 +68,9 @@ export function panel(s:Session,queue:number){
   const where=has?[season,`Episode ${ep!.number} of ${total}`,s.lang.toUpperCase(),s.phase==='playing'||s.phase==='paused'?(s.subtitle||''):'',s.phase==='playing'||s.phase==='paused'?(s.quality||'720p'):''].filter(Boolean).join(' · '):'';
   const showBar=has&&!!s.duration&&['playing','paused','loading'].includes(s.phase);
   const progress=showBar?`${progressBar(s.position,s.duration)}  \`${clock(s.position)} / ${clock(s.duration!)}\``:'';
-  const lines=[where,progress,[state,s.actualSource||''].filter(Boolean).join(' · '),s.owner?`Controls: <@${s.owner}>`:''].filter(Boolean);
+  // Discord counts a <t:…:R> timestamp down by itself, so the countdown needs no repeated edits of the panel.
+  const countdown=s.countdownUntil&&s.countdownUntil>Date.now()?`⏳ **Starting <t:${Math.ceil(s.countdownUntil/1000)}:R>** · the countdown is on the stream`:'';
+  const lines=[where,countdown||progress,countdown?'':[state,s.actualSource||''].filter(Boolean).join(' · '),s.owner?`Controls: <@${s.owner}>`:''].filter(Boolean);
   const detail=lines.join('\n')+upNext(s);
   const c=container();
   const title=escapeMarkdown((s.title?.title||'Camelot TV').slice(0,160));
@@ -81,7 +83,7 @@ export function panel(s:Session,queue:number){
   c.addSeparatorComponents(divider()).addActionRowComponents(
     row(...top),
     row(b('seek','Jump to time',!canSeek),b('lang',s.lang==='dub'?'Dub → Sub':'Sub → Dub',busy),b('search','Find anime',busy),b('lineup',`Queue${s.queue?.length?' · '+s.queue.length:''}`,!s.owner),b('queue',`My turn${queue?' · '+queue:''}`)),
-    row(b('goep','Go to episode',busy||!has||total<2),b('skipb','⏪ 10s',!canSeek),b('skipf','⏩ 30s',!canSeek),b('skipop','⏭ Skip intro',!canSeek)),
+    row(b('goep','Go to episode',busy||!has||total<2),b('skipop','⏭ Skip intro (85s)',!canSeek)),
   );
   if((s.title?.family?.length||0)>1)c.addActionRowComponents(selectRow(new StringSelectMenuBuilder().setCustomId(id('season')).setPlaceholder('Season').setDisabled(busy).addOptions(seasonOptions(s))));
   if(total>1)c.addActionRowComponents(selectRow(new StringSelectMenuBuilder().setCustomId(id('epsel')).setPlaceholder(`Episode · ${total} total`).setDisabled(busy).addOptions(episodeOptions(s))));
