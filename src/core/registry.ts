@@ -58,11 +58,6 @@ export interface ModuleSpec {
 }
 
 export const MODULES: ModuleSpec[] = [
-  {key:'streaming',name:'Streaming',blurb:'Watch together. One person holds the controls.',togglable:true,requires:[],permissions:[
-    {flag:PermissionFlagsBits.SendMessages,name:'Send Messages'},
-    {flag:PermissionFlagsBits.ReadMessageHistory,name:'Read Message History'},
-    {flag:PermissionFlagsBits.AttachFiles,name:'Attach Files'},
-  ],events:['messageCreate','voiceStateUpdate','interactionCreate'],settingsGroups:['streaming']},
   {
     key: 'core',
     name: 'Core',
@@ -113,6 +108,11 @@ export const MODULES: ModuleSpec[] = [
     // Its controls live under Activity, with protected roles under Permissions.
     settingsGroups: ['activity', 'permissions'],
   },
+  {key:'streaming',name:'Streaming',blurb:'Watch together. One person holds the controls.',togglable:true,requires:[],permissions:[
+    {flag:PermissionFlagsBits.SendMessages,name:'Send Messages'},
+    {flag:PermissionFlagsBits.ReadMessageHistory,name:'Read Message History'},
+    {flag:PermissionFlagsBits.AttachFiles,name:'Attach Files'},
+  ],events:['messageCreate','voiceStateUpdate','interactionCreate'],settingsGroups:['streaming']},
 ];
 
 export const COMMANDS: CommandSpec[] = [

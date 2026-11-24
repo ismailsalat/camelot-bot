@@ -99,7 +99,7 @@ export class Streaming {
   }
   private async claim(member:GuildMember){
     const ch=this.voice(member);
-    if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is turned off in Settings → Modules.');
+    if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is turned off. An admin can turn it on in /settings → Streaming.');
     const current=this.session;
     if(current?.owner){
       if(current.guild!==member.guild.id||current.channel!==ch.id)throw new Error('Streaming is busy in another voice channel. Use My turn to join the queue.');
@@ -226,7 +226,7 @@ export class Streaming {
   }
   async open(member:GuildMember){
     if(this.closed||this.stopping)throw new Error('Streaming is stopping. Try again in a moment.');
-    if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is off. The server owner can enable it in Settings → Modules.');
+    if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is off. An admin can turn it on in /settings → Streaming.');
     this.voice(member);
     if(this.session?.owner&&(this.session.guild!==member.guild.id||this.session.owner!==member.id)){
       return {content:'Streaming is in use. Join the queue for a turn.',components:[new ActionRowBuilder<any>().addComponents((await import('../core/ui.js')).button('tvr:queue','My turn'))]};
@@ -254,7 +254,7 @@ export class Streaming {
       const member=i.member;
       if(this.closed||this.stopping)throw new Error('Streaming is stopping. Try again in a moment.');
       if(custom.startsWith('tvs:')){await this.settings(i,member,custom.slice(4));return true}
-      if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is turned off. Ask the server owner to enable it in Settings → Modules.');
+      if(!getSettings(member.guild.id).modules.streaming)throw new Error('Streaming is turned off. An admin can turn it on in /settings → Streaming.');
       if(command){
         await i.deferReply({flags:MessageFlags.Ephemeral});
         await i.editReply({...await this.open(member),allowedMentions:NO_MENTIONS});return true;
@@ -347,6 +347,7 @@ export class Streaming {
       await i.showModal(inputModal('tvs:timers','Idle and empty timeouts','Idle seconds, empty seconds (30–1800)','120, 60',`${s.idleSeconds}, ${s.emptySeconds}`));return;
     }
     await i.deferReply({flags:MessageFlags.Ephemeral});
+    if(op==='toggle'){setByPath(member.guild.id,'modules.streaming',!getSettings(member.guild.id).modules.streaming);await i.editReply({components:[settingsCard(member)],flags:V2_PUBLIC,allowedMentions:NO_MENTIONS});return}
     if(op==='check'){
       if(this.session?.owner)throw new Error('Stop the active stream before checking the account.');
       await this.gate.run(async()=>{try{await this.bridge.connect(member.guild.id,getToken(member.guild.id))}finally{await this.bridge.close()}});

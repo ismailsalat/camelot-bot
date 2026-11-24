@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {log} from '../logger.js';
 
-export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean}
+export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean;lastError?:string}
 export class Bridge {
   private child:ChildProcess|null=null;
   private key=randomBytes(32).toString('hex');
@@ -25,7 +25,8 @@ export class Bridge {
   private async launch(){
     const env={...process.env,CAMELOT_INTERNAL:'1',CAMELOT_ADMIN_KEY:this.key,PORT:String(this.port)};
     for(const name of ['DISCORD_TOKEN','CAMELOT_STREAMER_TOKEN','CAMELOT_BRIDGE_KEY','STREAMING_SECRET_KEY'])delete (env as Record<string,string|undefined>)[name];
-    const child=spawn(process.execPath,[resolve('tv/server.mjs')],{env,detached:process.platform!=='win32',stdio:['ignore','ignore','ignore']});
+    const child=spawn(process.execPath,[resolve('tv/server.mjs')],{env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
+    for(const stream of [child.stdout,child.stderr])stream?.on('data',(chunk:Buffer)=>{for(const line of chunk.toString('utf8').split('\n')){const text=line.trim();if(text)log.info('[tv] '+text.slice(0,400))}});
     this.child=child;
     child.on('error',()=>{if(this.child===child)this.child=null;log.warn('TV service could not start. Check the Streaming setup.');});
     child.on('exit',()=>{if(this.child===child)this.child=null;this.killGroup(child)});
@@ -52,7 +53,10 @@ export class Bridge {
     while(Date.now()<deadline){
       await sleep(500);state=await this.call<WorkerState>('/api/state');
       if(state.connected&&state.guild===guild)return;
-      if(['offline','failed'].includes(state.status))throw new Error('Streaming account could not connect. Check the saved token and server membership.');
+      if(['offline','failed'].includes(state.status)){
+        const reason=(state.lastError||'').replace(/https?:\/\/\S+/g,'[link]').trim().slice(0,220);
+        throw new Error('Streaming account could not connect. '+(reason||'Check the saved token and that the account is in this server.'));
+      }
     }
     throw new Error('Streaming account connection timed out.');
   }

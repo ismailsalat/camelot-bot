@@ -118,7 +118,7 @@ test('Help includes /help and Streaming setup even while Streaming is off',()=>{
  const m=member('alice');const home=JSON.stringify(renderHelpHome(m).toJSON());
  assert(home.includes('/help'));assert(home.includes('/stream'));assert(home.includes('Streaming · Off'));
  const detail=JSON.stringify(renderHelpCategory(m,'streaming').toJSON());
- assert(detail.includes('server owner'));assert(detail.includes('My turn'));assert(detail.includes('Stop'));
+ assert(detail.includes('Turn it on')||detail.includes('turn it on'));assert(detail.includes('My turn'));assert(detail.includes('Stop'));
  assert(!JSON.stringify(renderHelpCategory(m,'purge').toJSON()).includes('Runs on its own'));
 });
 test('Streaming status distinguishes disabled, missing, valid and unreadable account',()=>{

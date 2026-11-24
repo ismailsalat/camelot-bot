@@ -40,27 +40,33 @@ test('shared opener opens actual VC panel and starts standby in order',async()=>
  tv.claim=async()=>{calls.push('claim');tv.session={channel:'voice'}};tv.paint=async(strict:boolean)=>{assert(strict);calls.push('panel')};tv.prepare=async()=>{calls.push('connect')};tv.bridge={call:async(path:string)=>{calls.push(path)}};
  const result=await tv.open(member());assert.deepEqual(calls,['claim','panel','connect','/api/standby']);assert(result.content.includes('<#voice>'));
 });
-test('remote missing /stream is repaired even when the saved fingerprint matches',async()=>{
+test('remote missing /stream is repaired in the global set even when the saved fingerprint matches',async()=>{
  meta.set('commands.fingerprint',commandFingerprint());const writes:any[]=[];
- const rest={get:async(route:string)=>route.includes('/guilds/')?[]:body().filter(c=>c.name!=='stream'),put:async(route:string,payload:any)=>writes.push(['put',route,payload]),post:async(route:string,payload:any)=>writes.push(['post',route,payload])} as any;
+ const rest={get:async(route:string)=>route.includes('/guilds/')?[]:body().filter(c=>c.name!=='stream'),put:async(route:string,payload:any)=>writes.push(['put',route,payload]),delete:async()=>assert.fail('nothing to delete')} as any;
  const result=await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});
- assert(result.published);assert.equal(writes.length,2);assert(writes[0][2].body.some((c:any)=>c.name==='stream'));assert.equal(writes[1][2].body.name,'stream');
+ assert(result.published);assert.equal(writes.length,1);assert(writes[0][2].body.some((c:any)=>c.name==='stream'));
 });
-test('synced global commands still repair a missing guild fallback without rewriting global commands',async()=>{
- const writes:any[]=[];const rest={get:async(route:string)=>route.includes('/guilds/')?[{name:'other',type:1,description:'Keep me'}]:body(),put:async()=>assert.fail('global set is current'),post:async(route:string,payload:any)=>writes.push(payload)} as any;
- await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});assert.equal(writes.length,1);assert.equal(writes[0].body.name,'stream');
+test('duplicate server-scoped /stream is deleted and unrelated server commands are kept',async()=>{
+ const deleted:string[]=[];
+ const rest={get:async(route:string)=>route.includes('/guilds/')?[{id:'dupe',name:'stream',type:1,description:'old'},{id:'keep',name:'other',type:1,description:'Keep me'}]:body(),put:async()=>assert.fail('global set is current'),delete:async(route:string)=>{deleted.push(route)}} as any;
+ const result=await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});
+ assert.equal(deleted.length,1);assert(deleted[0]!.endsWith('/guilds/guild/commands/dupe'));assert(result.published);
+});
+test('registering never creates a server-scoped /stream',async()=>{
+ const rest={get:async(route:string)=>route.includes('/guilds/')?[]:body().filter(c=>c.name!=='stream'),put:async(route:string)=>assert(!route.includes('/guilds/')),post:async()=>assert.fail('no per-server posts'),delete:async()=>assert.fail('nothing to delete')} as any;
+ await publishCommands({clientId:'app',token:'unused',guildIds:['a','b'],rest});
 });
 test('remote metadata and default values do not cause needless registration writes',async()=>{
  const rows=body().map(c=>({...c,id:'id',application_id:'app',version:'version',options:c.options??[],default_member_permissions:c.default_member_permissions??null}));
  assert(commandsMatch(rows,body()));
- const rest={get:async(route:string)=>route.includes('/guilds/')?rows.filter(c=>c.name==='stream'):rows,put:async()=>assert.fail('unnecessary put'),post:async()=>assert.fail('unnecessary post')} as any;
+ const rest={get:async(route:string)=>route.includes('/guilds/')?[]:rows,put:async()=>assert.fail('unnecessary put'),delete:async()=>assert.fail('unnecessary delete')} as any;
  const result=await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});assert.equal(result.reason,'unchanged');
 });
-test('failed global sync does not prevent the guild /stream repair',async()=>{
- let repaired=false;const rest={get:async(route:string)=>{if(!route.includes('/guilds/'))throw Error('temporary');return[]},put:async()=>{},post:async()=>{repaired=true}} as any;
- const result=await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});assert(repaired);assert.equal(result.reason,'failed');
+test('failed global sync is reported and still cleans duplicates',async()=>{
+ let cleaned=false;const rest={get:async(route:string)=>{if(!route.includes('/guilds/'))throw Error('temporary');return[{id:'d',name:'stream',type:1,description:'x'}]},put:async()=>{},delete:async()=>{cleaned=true}} as any;
+ const result=await publishCommands({clientId:'app',token:'unused',guildIds:['guild'],rest});assert(cleaned);assert.equal(result.reason,'failed');
 });
 test('development registration never clears global commands in other servers',async()=>{
- const rest={get:async(route:string)=>{assert(route.includes('/guilds/dev/'));return[]},put:async(route:string,payload:any)=>{assert(route.includes('/guilds/dev/'));assert(payload.body.length>0)},post:async()=>assert.fail('dev uses guild set')} as any;
+ const rest={get:async(route:string)=>{assert(route.includes('/guilds/dev/'));return[]},put:async(route:string,payload:any)=>{assert(route.includes('/guilds/dev/'));assert(payload.body.length>0)},delete:async()=>assert.fail('dev mode deletes nothing')} as any;
  const result=await publishCommands({clientId:'app',token:'unused',devGuildId:'dev',rest});assert(result.published);
 });

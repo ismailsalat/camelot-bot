@@ -166,7 +166,7 @@ export function purgeHealth(guild: Guild): Check[] {
 
 export function streamingHealth(guild: Guild): Check[] {
   const label = 'Streaming';
-  if (!isModuleEnabled(getSettings(guild.id), 'streaming')) return [{label, state:'off', detail:'Turn on in Settings → Modules.'}];
+  if (!isModuleEnabled(getSettings(guild.id), 'streaming')) return [{label, state:'off', detail:'Turn on in Settings → Streaming.'}];
   if (!hasToken(guild.id)) return [{label, state:'warn', detail:'Save the streaming account in Settings → Streaming.'}];
   try { getToken(guild.id); }
   catch { return [{label, state:'warn', detail:'Saved account cannot be opened. Restore the key or save the account again.'}]; }

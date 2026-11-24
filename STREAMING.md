@@ -7,7 +7,7 @@ This package adds Streaming to the existing Camelot bot. Use the files **inside 
 1. Apply the package using [UPDATE.md](UPDATE.md), including the updated Dockerfile and the whole `tv` directory. Keep your existing Railway Discord bot variables.
 2. Keep one replica. Attach a persistent Volume at `/data`, with `DATABASE_PATH=/data/camelot.sqlite`. The bot database, streaming session and encryption key must survive redeploys. Back up `/data/camelot.sqlite` and `/data/streaming.key` together.
 3. Use the included Dockerfile builder and `node dist/index.js` start command. Do not set a public HTTP health check: this is a Discord worker, and its TV API binds only to loopback. No public TV domain is needed.
-4. After deploying, the owner opens `/settings` → Modules → **Turn on Streaming**. Then an owner/admin opens `/settings` → Streaming → **Save account** and enters the streaming account token privately. It is encrypted in SQLite and never filled back into the form or printed in the panel. Discord token input itself is an ordinary private modal, not a password-masked field.
+4. After deploying, an owner or admin opens `/settings` → Streaming → **Turn on Streaming** (the owner can also use Modules), then **Save account** and enters the streaming account token privately, then **Check account**. It is encrypted in SQLite and never filled back into the form or printed in the panel. Discord token input itself is an ordinary private modal, not a password-masked field.
 5. Alternatively set `CAMELOT_STREAMER_TOKEN` and `CAMELOT_GUILD_ID` in Railway Variables. Saved settings take precedence. Removing the saved token does not delete Railway Variables. An optional `STREAMING_SECRET_KEY` must be exactly 64 hex characters and stay unchanged. Otherwise the application creates `/data/streaming.key`.
 Use **Check account** in Settings → Streaming to verify login and server membership before playing. This check does not start a stream. `/help` lists Streaming even when it is off, and Bot Status checks whether its saved account can be opened.
 
@@ -87,3 +87,11 @@ Startup checks Discord’s command list instead of trusting a local fingerprint.
 `!stream` opens the same VC panel as `/stream`, with the same account, module, voice-channel, queue and controller rules. It remains available even with a custom prefix or general text commands turned off. The configured prefix also works when text commands are on. Enable Message Content Intent in the Developer Portal so text commands can be read.
 
 The 11 added tests cover actual text routing, module/voice restrictions, busy-session handling, cached-but-missing commands, guild registration, retry reporting and preservation of other servers’ global commands. No live Discord registration was performed in the build workspace.
+
+## v14 fixes
+
+- **Account check always failed.** The TV worker received the account token on stdin, but FFmpeg encoder probes run at import time and inherited that same pipe, swallowing the token line ("Invalid initial handshake"). The worker now keeps a private copy of the pipe and gives child processes /dev/null.
+- **Real failure reasons.** A rejected token, a banned/locked account, or an account that is not in the server now produce a specific message in Discord instead of a generic one. TV service output is also written to the bot log (tokens redacted), so Railway logs show what happened.
+- **Pasted tokens** are cleaned of surrounding quotes and a `Bot ` prefix before saving.
+- **No switch to enable Streaming.** Admins can now press **Turn on / Turn off Streaming** in Settings → Streaming. Modules (owner only) still has it too, listed last.
+- **Two `/stream` commands.** /stream was registered both globally and per server. It is now global only, and leftover per-server copies are deleted at startup. If Discord still shows two, restart the Discord app (Ctrl+R) to clear its cache.

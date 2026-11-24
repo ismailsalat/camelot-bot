@@ -55,7 +55,7 @@ function workerStart(token,guild){
     cwd:join(DIR,'runtime'),
     stdio:['pipe','pipe','pipe'],env:childEnv
   });
-  worker.child=child;worker.token=token;worker.guild=String(guild);worker.ready=false;worker.status='connecting';worker.channels=[];worker.account=null;
+  lastError='';  worker.child=child;worker.token=token;worker.guild=String(guild);worker.ready=false;worker.status='connecting';worker.channels=[];worker.account=null;
   child.stdin.on('error',()=>{});
   child.stdin.write(JSON.stringify({token,guild:String(guild)})+'\n');
   child.on('error',e=>{commands.close();log('error','Python worker failed to start. Run setup or check Railway build logs.');if(worker.child===child){worker.child=null;worker.ready=false;worker.status='offline'}});

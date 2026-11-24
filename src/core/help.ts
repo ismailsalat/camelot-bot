@@ -125,7 +125,7 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
   if (key === 'streaming') {
     body.addTextDisplayComponents(text(isModuleEnabled(settings, key)
       ? 'Join a voice channel → `/stream` or `!stream` → **Find anime** → **Play**. The controls appear in that VC’s chat.'
-      : 'Streaming is off. The server owner can turn it on in `/settings` → **Modules**, then an admin can save the account in **Streaming**.'));
+      : 'Streaming is off. An admin can turn it on in `/settings` → **Streaming**, then save the account there.'));
     body.addTextDisplayComponents(text('If /stream is missing from Discord’s menu, type **!stream** in chat. This fallback also works with text commands turned off.'));
     body.addTextDisplayComponents(text('**Playback**\nPrevious ep · Next ep · Stop · Play/Pause\nBack 30 sec · Forward 30 sec · Custom time\nChoose a source from the dropdown if playback fails.'));
     body.addTextDisplayComponents(text('**Taking turns**\nOne person controls the stream. **My turn** joins the queue. **Stop** ends the session and frees the next turn.'));

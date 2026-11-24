@@ -6,7 +6,7 @@ import { log } from '../logger.js';
 
 const KEY = 'commands.fingerprint';
 export interface PublishResult {published:boolean;count:number;reason:'unchanged'|'changed'|'first-run'|'failed'}
-type CommandRest=Pick<REST,'get'|'put'|'post'>;
+type CommandRest=Pick<REST,'get'|'put'|'delete'>;
 function fingerprint(payload:unknown,scope:string):string{
   return createHash('sha256').update(`${scope}\n${JSON.stringify(payload)}`).digest('hex').slice(0,32);
 }
@@ -26,7 +26,12 @@ export function commandsMatch(remote:any[],desired:any[],guild=false):boolean{
 }
 
 /** Read Discord on boot. A local fingerprint alone cannot prove a command exists.
- * A guild-scoped /stream provides prompt visibility alongside the global set. */
+ *
+ * Every command is registered ONCE, globally. An earlier version also pushed a
+ * server-scoped copy of /stream, and Discord lists a global and a server command
+ * of the same name side by side, which is why /stream showed up twice. Any
+ * leftover server-scoped /stream is deleted here; unrelated server commands are
+ * never touched. */
 export async function publishCommands(options:{clientId:string;token:string;devGuildId?:string;guildIds?:string[];rest?:CommandRest}):Promise<PublishResult>{
   const body=buildCommands().map(c=>c.toJSON());
   const scope=options.devGuildId?`guild:${options.devGuildId}`:'global';
@@ -40,24 +45,22 @@ export async function publishCommands(options:{clientId:string;token:string;devG
       await rest.put(route,{body});published=true;
       log.info(`Published ${body.length} commands to ${scope}: ${body.map(c=>c.name).join(', ')}`);
     }
-    // Keep existing globals in development mode: other servers may use them.
     meta.set(KEY,next);
   }catch(error){failed=true;log.error('Could not sync slash commands. !stream remains available; retrying at startup.',error)}
-  const stream=body.find(c=>c.name==='stream')!;
+  // In development mode the dev server already holds the full set; there is nothing to de-duplicate.
   const guilds=options.devGuildId?[]:[...new Set(options.guildIds??[])];
   for(const guildId of guilds){
     try{
       const guildRoute=Routes.applicationGuildCommands(options.clientId,guildId);
       const remote=await rest.get(guildRoute) as any[];
-      const current=remote.filter(c=>c.name==='stream'&&(c.type??1)===1);
-      if(!commandsMatch(current,[stream],true)){
-        // Upsert just /stream; preserve unrelated server commands and permissions.
-        await rest.post(guildRoute,{body:stream});published=true;
-        log.info(`Registered /stream in server ${guildId}. !stream is also available.`);
+      const stale=remote.filter(c=>c.name==='stream'&&(c.type??1)===1&&c.id);
+      for(const old of stale){
+        await rest.delete(Routes.applicationGuildCommand(options.clientId,guildId,old.id));published=true;
+        log.info(`Removed duplicate server-scoped /stream from server ${guildId}.`);
       }
-    }catch(error){failed=true;log.error(`Could not register /stream in server ${guildId}; use !stream.`,error)}
+    }catch(error){failed=true;log.error(`Could not clean up duplicate /stream in server ${guildId}.`,error)}
   }
-  if(!failed)log.info(`Verified ${body.length} slash commands against Discord. Streaming fallback: !stream.`);
+  if(!failed)log.info(`Verified ${body.length} slash commands against Discord.`);
   return {published,count:body.length,reason:failed?'failed':published?(previous===null?'first-run':'changed'):'unchanged'};
 }
 export function commandFingerprint(devGuildId?:string):string{

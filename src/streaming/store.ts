@@ -15,7 +15,9 @@ function key(create=false):Buffer{
   const value=readFileSync(path);if(value.length!==32)throw new Error('Streaming encryption key is invalid.');return value;
 }
 export function saveToken(guild:string,token:string){
-  token=token.trim();if(token===process.env.DISCORD_TOKEN)throw new Error('Use the separate streaming account, not Camelot’s bot token.');if(token.length<30||token.length>250||/\s/.test(token))throw new Error('That token does not look valid.');
+  // Forgive common paste artefacts: surrounding quotes, a "Bot "/"Bearer " prefix, stray line breaks.
+  token=token.trim().replace(/^["'`]+|["'`]+$/g,'').replace(/^(bot|bearer)\s+/i,'').trim();
+  if(token===process.env.DISCORD_TOKEN)throw new Error('Use the separate streaming account, not Camelot’s bot token.');if(token.length<30||token.length>250||/\s/.test(token))throw new Error('That token does not look valid.');
   const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key(true),iv);cipher.setAAD(Buffer.from(guild));
   const encrypted=Buffer.concat([cipher.update(token,'utf8'),cipher.final()]);
   put('token:'+guild,Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64'));

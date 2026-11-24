@@ -280,8 +280,9 @@ async function onSettings(
     }
 
     case 's.m': {
-      if (!isOwner(member)) return await denied(interaction, 'Owner only.');
       const key = args[0] as 'clips' | 'activity' | 'purge' | 'streaming';
+      // Streaming is the one module admins may switch themselves; the rest stay owner only.
+      if (!isOwner(member) && !(key === 'streaming' && isAdmin(member))) return await denied(interaction, 'Owner only.');
       const settings = getSettings(guildId);
       setByPath(guildId, `modules.${key}`, !settings.modules[key]);
       return await show(interaction, renderGroup(member, 'modules', interaction.client));

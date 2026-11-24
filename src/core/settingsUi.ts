@@ -66,7 +66,7 @@ export function renderHome(member: GuildMember) {
 
   const enabled = MODULES.filter((module) => isModuleEnabled(settings, module.key)).map((module) => module.name);
   body.addTextDisplayComponents(text(`On right now: ${enabled.join(' · ')}`));
-  if(!settings.modules.streaming)body.addTextDisplayComponents(text('Streaming is off. Enable it in Modules, then set up the account in Streaming.'));
+  if(!settings.modules.streaming)body.addTextDisplayComponents(text('Streaming is off. Open **Streaming** below and press Turn on Streaming, then save the account.'));
 
   if (tier === 'admin') {
     body.addTextDisplayComponents(text('_Some settings are owner only._'));

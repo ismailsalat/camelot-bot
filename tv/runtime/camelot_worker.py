@@ -7,6 +7,17 @@ import asyncio, json, logging, os, re, sys, time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# The control channel is stdin, and the parent writes the account token to it the
+# moment this process starts. Importing the video player below runs FFmpeg encoder
+# probes, and any child that inherits fd 0 reads from that same pipe: FFmpeg swallowed
+# the token line, the handshake then failed, and the account "could not connect" no
+# matter which token was used. Keep a private copy of the pipe for ourselves and
+# point fd 0 at /dev/null for every child process.
+CONTROL_FD = os.dup(0)
+_null_fd = os.open(os.devnull, os.O_RDONLY)
+os.dup2(_null_fd, 0)
+os.close(_null_fd)
+
 import discord
 import discord.gateway
 import discord.voice_state
@@ -116,7 +127,8 @@ class CamelotOnline(commands.Bot):
         guild=self.get_guild(GUILD_ID)
         if guild is None:
             log.error('Configured server not found. Add the streaming account to the selected server.')
-            emit('error',message='Streaming account is not in the configured server')
+            emit('error',message='The streaming account is not a member of this server. Join it with that account first.')
+            await self.close()
             return
         channels=[{'id':str(c.id),'name':c.name} for c in guild.voice_channels]
         channels.sort(key=lambda x:x['name'].lower())
@@ -281,7 +293,7 @@ async def main():
     global TOKEN,GUILD_ID
     reader=asyncio.StreamReader(limit=16384)
     protocol=asyncio.StreamReaderProtocol(reader)
-    await asyncio.get_running_loop().connect_read_pipe(lambda:protocol,sys.stdin.buffer)
+    await asyncio.get_running_loop().connect_read_pipe(lambda:protocol,os.fdopen(CONTROL_FD,'rb',buffering=0))
     first=await reader.readline()
     if not first or len(first)>1000:raise SystemExit('Startup handshake missing')
     try:data=json.loads(first)
@@ -294,6 +306,15 @@ async def main():
     emit('connecting')
     bot=CamelotOnline(reader)
     try:await bot.start(TOKEN)
+    except discord.LoginFailure:
+        log.error('Discord rejected the streaming account token.')
+        emit('error',message='Discord rejected that token. Use the streaming account\'s user token (not a bot token) and copy it again.')
+    except discord.HTTPException as exc:
+        log.error('Discord login failed: HTTP %s',getattr(exc,'status','?'))
+        emit('error',message=f'Discord refused the login (HTTP {getattr(exc,"status","?")}). The account may be locked or need verification.')
+    except Exception as exc:
+        log.error('Discord login failed: %s',type(exc).__name__)
+        emit('error',message=f'Could not log in to Discord ({type(exc).__name__}).')
     finally:await bot.close()
 
 if __name__=='__main__':
