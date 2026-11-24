@@ -54,6 +54,12 @@ class LiveSession:
         try:
             if player:
                 player.stop()
+                # FFmpeg ignores SIGTERM while blocked writing to its pipe, and the player then waits 3 s
+                # before SIGKILL on every episode change. Nothing needs a graceful exit here.
+                proc = getattr(player, '_proc', None)
+                try:
+                    if proc and proc.poll() is None:proc.kill()
+                except Exception:pass
                 await asyncio.to_thread(player.join, 8)
                 if player.is_alive():
                     proc = player._proc

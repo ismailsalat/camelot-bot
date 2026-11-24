@@ -77,6 +77,17 @@ def clean_headers(raw):
 
 # Apply request headers when the provider needs a legitimate Referer/User-Agent.
 # Uses the existing pinned FFmpeg implementation; no arbitrary shell execution.
+X264_PRESETS={'ultrafast','superfast','veryfast','faster','fast','medium'}
+def _tune_x264(cmd):
+    """Software-encoder quality knobs that the pinned player does not expose."""
+    if '-c:v' not in cmd or cmd[cmd.index('-c:v')+1]!='libx264':return
+    preset=os.environ.get('STREAM_X264_PRESET','').strip().lower()
+    if preset in X264_PRESETS and '-preset' in cmd:cmd[cmd.index('-preset')+1]=preset
+    if '-vf' in cmd:
+        i=cmd.index('-vf')+1
+        # Lanczos keeps text and line art crisp when scaling a 1080p source down.
+        cmd[i]=re.sub(r'(?<![\w_])scale=(\d+:\d+)(?![:\d])',r'scale=\1:flags=lanczos',cmd[i],count=1)
+
 _original_ffmpeg_cmd=H264VideoPlayer._ffmpeg_cmd
 _source_headers={}
 _source_hls={}
@@ -87,6 +98,7 @@ def _headers_ffmpeg_cmd(self):
     cmd=_original_ffmpeg_cmd(self)
     url=str(getattr(self,'_url',''))
     cmd=apply_source_options(cmd, _source_headers.get(url, {}), _source_hls.get(url, False), _source_subtitles.get(url))
+    _tune_x264(cmd)
     index=cmd.index('-i')
     offset=_source_offsets.get(url,0)
     if url==STANDBY:cmd[index:index]=['-stream_loop','-1']

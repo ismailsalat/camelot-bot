@@ -19,7 +19,7 @@ function safeItems(items){
    poster:typeof x.poster==='string'?x.poster:'',languages:[],availability:'catalog-only',catalogSource:x.catalogSource
  })).filter(x=>{if(seen.has(normTitle(x.title)))return false;seen.add(normTitle(x.title));return true}).slice(0,15)
 }
-export async function searchAnimeCatalog(query,{fetcher=fetch,timeoutMs=9000}={}){
+export async function searchAnimeCatalog(query,{fetcher=fetch,timeoutMs=6000}={}){
  const q=String(query||'').trim().slice(0,80);
  if(q.length<2)throw new Error('Enter at least two letters');
  let errors=[];

@@ -1,4 +1,5 @@
 import {sameAnime} from './catalog.mjs';
+import {settleWithGrace} from './grace.mjs';
 
 export const LANGUAGES=['sub','dub','raw'];
 export const KNOWN_LANGUAGES={animeparadise:['sub'],gogoanime:['sub'],goyabu:['raw']};
@@ -16,15 +17,20 @@ export function matchingSources(original,candidates) {
     seen.add(key);return true;
   });
 }
-export async function inspectSources(original,candidates,list) {
-  return Promise.all(matchingSources(original,candidates).map(async item=>{
+export async function inspectSources(original,candidates,list,{graceMs=0}={}) {
+  const items=matchingSources(original,candidates);
+  const tasks=items.map(async item=>{
     try {
       const episodes=await list(item.provider,item.id);
       return {provider:item.provider,media:item.id,status:'checked',episodes:episodes.map(e=>({...e,languages:episodeLanguages(e,item.provider)}))};
     } catch {
       return {provider:item.provider,media:item.id,status:'unavailable',episodes:[]};
     }
-  }));
+  });
+  // The slowest source used to decide how long loading took. Once one source has listed episodes the
+  // others get a short grace period; stragglers keep running and are cached for the Play step.
+  const settled=await settleWithGrace(tasks,{graceMs,isGood:row=>row.status==='checked'});
+  return settled.map((x,i)=>x.status==='fulfilled'?x.value:{provider:items[i].provider,media:items[i].id,status:'unavailable',episodes:[]});
 }
 export function languageAvailability(rows,number,language) {
   const listed=[],unknown=[];

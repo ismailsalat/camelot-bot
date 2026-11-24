@@ -29,11 +29,12 @@ export async function getProviders() {
   constructed=out;
   return out;
 }
+import {settleWithGrace} from './grace.mjs';
 export async function searchCatalog(q,which='all') {
   const p=await getProviders();
   const targets=which==='all'?[...p.entries()]:[[which,p.get(which)]].filter(x=>x[1]);
   if(!targets.length)throw new Error('Unknown provider');
-  const settled=await Promise.allSettled(targets.map(async([key,instance])=>{
+  const settled=await settleWithGrace(targets.map(async([key,instance])=>{
     // One dead or slow source must not hold up the whole search: 11 run in parallel and the
     // slowest used to decide the wait (12+ seconds every time). Tunable with PROVIDER_SEARCH_MS.
     const budget=Math.max(3000,Number(process.env.PROVIDER_SEARCH_MS)||7000);
@@ -43,7 +44,7 @@ export async function searchCatalog(q,which='all') {
       .slice(0,12).map(r=>({id:r.id,provider:key,title:String(r.title||'Untitled').slice(0,125),
         poster:typeof r.thumbnailUrl==='string'?r.thumbnailUrl:'',year:r.year??null,
         languages:Array.isArray(r.availableLanguages)?r.availableLanguages:[]}));
-  }));
+  }),{graceMs:Number(process.env.SEARCH_GRACE_MS)||3000,isGood:rows=>rows.length>0});
   const results=filterSourceSearchResults(q,settled.flatMap(x=>x.status==='fulfilled'?x.value:[]));
   const failures=settled.map((x,i)=>{
     if(x.status!=='rejected')return null;

@@ -14,7 +14,7 @@ Use **Check account** in Settings → Streaming to verify login and server membe
 6. The streaming account must already belong to the server and have access to the voice channel. Camelot needs View Channel, Send Messages, Read Message History and Attach Files in VC chat. The streaming account needs Connect, Speak and Video permissions.
 7. Join a VC and use `/stream` or type `!stream` in chat. Select **Find anime**, pick the title, then **Play**. New commands publish automatically at startup.
 
-The image installs Node, Python, FFmpeg, Opus and fonts. Software H.264 is supported without a GPU. Defaults are 540p (960:540), 24 fps and 1800k video bitrate, which software encoding can hold on a shared Railway CPU. If playback is smooth, raise them in Railway Variables: `STREAM_RESOLUTION=1280:720`, `STREAM_FPS=30`, `STREAM_VIDEO_BITRATE=2500k`.
+The image installs Node, Python, FFmpeg, Opus and fonts. Software H.264 is supported without a GPU. Defaults are 720p, 30 fps, 6000k video bitrate, x264 preset `superfast` and a Lanczos scaler. For a sharper picture set these in Railway Variables: `STREAM_RESOLUTION=1920:1080`, `STREAM_VIDEO_BITRATE=8000k`, `STREAM_X264_PRESET=veryfast` (more CPU; if it stutters, step back one). With a 1080p output the 1080p source is preferred.
 
 ## Controls
 
@@ -96,9 +96,9 @@ The 11 added tests cover actual text routing, module/voice restrictions, busy-se
 - **No switch to enable Streaming.** Admins can now press **Turn on / Turn off Streaming** in Settings → Streaming. Modules (owner only) still has it too, listed last.
 - **Two `/stream` commands.** /stream was registered both globally and per server. It is now global only, and leftover per-server copies are deleted at startup. If Discord still shows two, restart the Discord app (Ctrl+R) to clear its cache.
 
-## v15 fixes (lag, failed first Play, slow loading)
+## v15 fixes (failed first Play, waiting time)
 
 - **First Play failed and needed a reconnect.** Restarting Go Live right after the previous stream was torn down made Discord never answer, so the start timed out. The worker now waits briefly, retries up to 3 times (re-joining voice on retries), and no longer restarts the standby slate when it is already showing.
-- **Lag.** Default encode lowered to 540p / 24 fps / 1800k (see above). Anime is 24 fps natively, so this also avoids duplicated frames.
-- **Slow search and loading.** Each source now gets 7 seconds (`PROVIDER_SEARCH_MS`) instead of 12.5, one dead source can no longer hold up the whole search, and picking a title reuses the sources already found instead of searching all eleven again. Episode lists time out at 15 s instead of 28 s.
-- **Stops mid-playback.** Start-up and stall watchdogs are more patient (60 s / 90 s), so a slow source or busy CPU is not mistaken for a dead stream.
+- **Waiting time.** Search and episode loading used to wait for the slowest of 11 sources (12–16 s each). Once one source has answered, the rest now get 3 s (`SEARCH_GRACE_MS`, `EPISODE_GRACE_MS`); stragglers keep running and are cached for Play. Each source search is capped at 7 s (`PROVIDER_SEARCH_MS`). Picking a title reuses the sources already found, and switching episodes no longer waits 3 s for FFmpeg to ignore SIGTERM.
+- **Clarity.** Measured on Railway: 720p30 held 30.0 fps with no late frames, so the CPU has headroom. Bitrate went from 2500k to 6000k, preset from `ultrafast` to `superfast`, and scaling uses Lanczos.
+- **Stops mid-playback.** Start-up and stall watchdogs are more patient (60 s / 90 s), so a slow source is not mistaken for a dead stream.

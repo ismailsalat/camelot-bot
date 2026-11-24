@@ -39,7 +39,9 @@ export function cleanHeaders(raw) {
   return result;
 }
 export function rankedStreams(raw,lang='sub') {
-  const prefs={'720p':0,'auto':1,'480p':2,'1080p':3,'360p':4};
+  // Output at 1080p wants a 1080p source; otherwise 720p is plenty and cheaper to decode.
+  const wantsFullHd=Number(String(process.env.STREAM_RESOLUTION||'').split(/[:x]/)[1])>=1000;
+  const prefs=wantsFullHd?{'1080p':0,'auto':1,'720p':2,'480p':3,'360p':4}:{'720p':0,'auto':1,'480p':2,'1080p':3,'360p':4};
   if (!Array.isArray(raw)) return [];
   return raw.filter(s=>validateMediaUrl(s?.sourceUrl)&&(!s.language||s.language===lang)).map(s=>({
     url: validateMediaUrl(s.sourceUrl), isHLS:Boolean(s.isHLS), quality:s.quality||'auto',

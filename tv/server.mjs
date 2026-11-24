@@ -50,10 +50,11 @@ function workerStart(token,guild){
   if(typeof token!=='string'||token.length<30||token.length>250||!/^[0-9]{15,22}$/.test(String(guild)))throw new Error('Missing or invalid streaming account token / server ID');
   const python=process.env.PYTHON_BIN || ((CLOUD||INTERNAL)?join(DIR,'.cloud-venv','bin','python'):'/home/'+(process.env.USER||'')+'/.local/share/camelot-tv/venv/bin/python');
   const childEnv={...process.env, PYTHONUNBUFFERED:'1',STREAM_QUALITY:process.env.STREAM_QUALITY||'720p',
-    // Software x264 on a shared Railway vCPU cannot hold 720p30 for real anime without stuttering.
-    // 540p at the anime-native 24 fps needs roughly a third of the CPU. Raise these in Railway if it runs smoothly:
-    // STREAM_RESOLUTION=1280:720  STREAM_FPS=30  STREAM_VIDEO_BITRATE=2500k
-    STREAM_RESOLUTION:process.env.STREAM_RESOLUTION||'960:540',STREAM_FPS:process.env.STREAM_FPS||'24',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'1800k'};
+    // Measured on Railway: 720p30 held 30.0 fps with no late frames, so the CPU has room. The old 2500k
+    // bitrate with the fastest x264 preset is what made it look soft. Raise for a sharper picture:
+    //   STREAM_RESOLUTION=1920:1080  STREAM_VIDEO_BITRATE=8000k   (needs more CPU)
+    //   STREAM_X264_PRESET=veryfast|faster                         (better quality per bit, more CPU)
+    STREAM_RESOLUTION:process.env.STREAM_RESOLUTION||'1280:720',STREAM_FPS:process.env.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'6000k',STREAM_X264_PRESET:process.env.STREAM_X264_PRESET||'superfast'};
   delete childEnv.CAMELOT_STREAMER_TOKEN;delete childEnv.CAMELOT_ADMIN_KEY;delete childEnv.CAMELOT_BRIDGE_KEY;
   const child=spawn(python,['-u',join(DIR,'runtime','camelot_worker.py')],{
     cwd:join(DIR,'runtime'),
@@ -142,7 +143,7 @@ async function discoverMatches(selection){
 }
 async function loadTitle(selection){
  const found=await discoverMatches(selection);
- const rows=await inspectSources(selection,found.candidates,cachedEpisodes);
+ const rows=await inspectSources(selection,found.candidates,cachedEpisodes,{graceMs:Number(process.env.EPISODE_GRACE_MS)||3000});
  const episodes=episodeMenu(rows,{incomplete:found.failures.length>0});
  const selected=selection.provider==='catalog'?found.candidates[0]:selection;
  if(!selected||!episodes.length)throw new Error('No matching source returned episodes. Try Refresh Sources or another title.');
