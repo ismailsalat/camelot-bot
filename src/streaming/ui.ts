@@ -4,6 +4,7 @@ import {Ids} from '../core/ids.js';
 import {getSettings} from '../db/settings.js';
 import {tokenSource} from './store.js';
 import {clock,type Session} from './model.js';
+import {upNext} from './queue.js';
 
 export function settingsCard(member:GuildMember){
   const settings=getSettings(member.guild.id),s=settings.streaming;
@@ -26,7 +27,7 @@ export function panel(s:Session,queue:number){
   const canSeek=has&&!!s.duration&&['playing','paused'].includes(s.phase);
   const time=`${clock(s.position)} / ${s.duration?clock(s.duration):'--:--'}`;
   const state={idle:s.owner?'Ready':'Available',loading:'Loading…',playing:'Playing',paused:'Paused',offline:'Offline',error:'Try another source'}[s.phase];
-  const detail=`${ep?`Episode ${ep.number} · ${s.lang.toUpperCase()} · `:''}${state}\n${has?'`'+time+'` · ':''}${s.actualSource||(s.source==='auto'?'Auto source':s.source)}${s.owner?'\nControls: <@'+s.owner+'>':''}`;
+  const detail=`${ep?`Episode ${ep.number} · ${s.lang.toUpperCase()} · `:''}${state}\n${has?'`'+time+'` · ':''}${s.actualSource||(s.source==='auto'?'Auto source':s.source)}${s.owner?'\nControls: <@'+s.owner+'>':''}${upNext(s)}`;
   const c=container();
   const title=escapeMarkdown((s.title?.title||'Camelot TV').slice(0,160));
   if(s.title?.poster?.startsWith('https://'))c.addSectionComponents(sectionWithThumb(`## ${title}\n${detail}`,s.title.poster));
@@ -36,7 +37,7 @@ export function panel(s:Session,queue:number){
   c.addSeparatorComponents(divider()).addActionRowComponents(
     row(b('prev','Previous ep',busy||!has||s.episode<=0),b('next','Next ep',busy||!has||s.episode>=s.episodes.length-1),b('stop','Stop',!s.owner),b('play',s.phase==='playing'?'Pause':'Play',busy||!has)),
     row(b('back','↶ 30 sec',!canSeek),b('forward','30 sec ↷',!canSeek),b('seek','Custom',!canSeek),b('episode','Episode',busy||!has)),
-    row(b('search','Find anime',busy),b('lang',s.lang==='dub'?'Dub → Sub':'Sub → Dub',busy),b('queue',`My turn${queue?' · '+queue:''}`)),
+    row(b('search','Find anime',busy),b('lang',s.lang==='dub'?'Dub → Sub':'Sub → Dub',busy),b('lineup',`Queue${s.queue?.length?' · '+s.queue.length:''}`,!s.owner),b('queue',`My turn${queue?' · '+queue:''}`)),
   );
   if(s.sources.length)c.addActionRowComponents(selectRow(new StringSelectMenuBuilder().setCustomId(id('source')).setPlaceholder('Switch source').setDisabled(busy).addOptions(
     [{label:'Auto · try alternatives',value:'auto',default:s.source==='auto'},...s.sources.slice(0,24).map(p=>({label:p,value:p,default:s.source===p}))]

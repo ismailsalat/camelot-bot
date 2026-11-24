@@ -44,6 +44,7 @@ export function restoreSession():Session|null{
     if(s.title&&typeof s.title.poster!=='string')delete s.title.poster;
     s.duration=Number.isFinite(s.duration)&&s.duration>0?s.duration:null;
     if(typeof s.source!=='string')s.source='auto';
+    if(s.queue!==undefined)s.queue=Array.isArray(s.queue)?s.queue.filter((t:any)=>t&&typeof t.id==='string'&&typeof t.provider==='string'&&typeof t.title==='string').slice(0,20):[];
     return s;
   }catch{return null}
 }

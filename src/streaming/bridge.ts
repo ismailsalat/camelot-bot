@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {log} from '../logger.js';
 
-export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean;lastError?:string}
+export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean;lastError?:string;failReason?:string}
 export class Bridge {
   private child:ChildProcess|null=null;
   private key=randomBytes(32).toString('hex');
@@ -12,6 +12,7 @@ export class Bridge {
   private closing:Promise<void>|null=null;
   private requests=new AbortController();
   private port=Number(process.env.STREAMING_PORT||'3334');
+  get running(){return !!this.child&&!this.closing}
   cancelRequests(){this.requests.abort(new Error('Playback change cancelled.'));this.requests=new AbortController()}
   private killGroup(child:ChildProcess){
     try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else if(child.exitCode===null)child.kill('SIGKILL')}catch{}

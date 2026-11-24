@@ -54,4 +54,46 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events,[{'event':'ack','requestId':'1','ok':True}])
         finally:
             task.cancel();await asyncio.gather(task,return_exceptions=True);worker.emit=original
+
+class KickTests(unittest.IsolatedAsyncioTestCase):
+    def bot_in(self,voice_client,mode='streaming'):
+        bot=worker.CamelotOnline.__new__(worker.CamelotOnline)
+        stopped=[]
+        async def stop():stopped.append(1)
+        bot.live=SimpleNamespace(player=SimpleNamespace(_frames_emitted=300,_fps=30,_proc=None,is_alive=lambda:True),sender=None,stop=stop)
+        bot.offset=12.0;bot.job={'duration':1400};bot.reported=True;bot.mode=mode;bot.play_lock=asyncio.Lock();bot.started=time.monotonic()
+        bot.target_channel='222';bot.gone_ticks=0;bot.fail_reason=''
+        guild=SimpleNamespace(voice_client=voice_client)
+        bot.get_guild=lambda gid:guild
+        bot._stopped=stopped
+        return bot
+    async def test_kicked_account_is_reported_after_three_checks_and_stopped(self):
+        events=[];original=worker.emit;worker.emit=lambda op,**f:events.append({'event':op,**f})
+        try:
+            bot=self.bot_in(None)
+            await bot.monitor_once();await bot.monitor_once()
+            self.assertEqual(bot.mode,'streaming',msg='a short blip must not trigger a rejoin')
+            await bot.monitor_once()
+            self.assertEqual(bot.mode,'failed');self.assertEqual(bot.fail_reason,'kicked')
+            self.assertEqual(bot._stopped,[1])
+            failed=[e for e in events if e['event']=='failed'];self.assertEqual(failed[0]['reason'],'kicked')
+            self.assertGreaterEqual(failed[0]['position'],12.0)
+        finally:worker.emit=original
+    async def test_moved_to_another_channel_counts_as_removed(self):
+        events=[];original=worker.emit;worker.emit=lambda op,**f:events.append({'event':op,**f})
+        try:
+            vc=SimpleNamespace(channel=SimpleNamespace(id=999),is_connected=lambda:True)
+            bot=self.bot_in(vc)
+            for _ in range(3):await bot.monitor_once()
+            self.assertEqual(bot.fail_reason,'kicked')
+        finally:worker.emit=original
+    async def test_account_in_the_right_channel_is_left_alone(self):
+        vc=SimpleNamespace(channel=SimpleNamespace(id=222),is_connected=lambda:True)
+        bot=self.bot_in(vc)
+        for _ in range(5):await bot.monitor_once()
+        self.assertEqual(bot.fail_reason,'');self.assertEqual(bot.gone_ticks,0)
+    async def test_deliberate_switching_is_never_mistaken_for_a_kick(self):
+        bot=self.bot_in(None,mode='switching')
+        for _ in range(5):await bot.monitor_once()
+        self.assertEqual(bot.gone_ticks,0);self.assertEqual(bot.fail_reason,'')
 if __name__=='__main__':unittest.main()

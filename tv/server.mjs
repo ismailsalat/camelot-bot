@@ -110,7 +110,7 @@ function consumeWorkerLine(line,kind){
       const e=JSON.parse(line.slice('TV_BRIDGE_JSON:'.length));
       if(commands.accept(e))return;
       if(e.event==='ready'){worker.ready=true;worker.streamerId=e.streamerId;worker.channels=e.channels||[];worker.account=e.streamer||'';if(['offline','connecting','failed'].includes(worker.status))worker.status='connected';log('info',`Connected as ${worker.account} to ${e.server} (${worker.channels.length} channels)`)}
-      else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed')log('error','Playback interrupted; choose another source or retry');}
+      else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.failReason=e.event==='failed'?String(e.reason||''):'';worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed')log(e.reason==='kicked'?'warning':'error',e.reason==='kicked'?'Removed from the voice channel; the bot will rejoin':'Playback interrupted; choose another source or retry');}
       else if(e.event==='starting'){worker.status='starting';worker.position=e.position??0;worker.playing=e.title;worker.voice=e.channel;log('info','Go Live connection starting')}
       else if(e.event==='stream_requested'){worker.status='requested';log('info','Go Live session requested. Check the voice channel.')}
       else if(e.event==='stopped'){worker.status='connected';worker.playing=null;worker.position=0;worker.duration=null;log('info','Stopped playback')}
@@ -188,7 +188,7 @@ async function body(req){
 }
 function state(){return {version:VERSION,cloud:CLOUD,status:worker.status,connected:worker.ready,account:worker.account,
  guild:worker.ready?worker.guild:null,channels:worker.channels,playing:worker.playing,
- position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+ position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
 function err(res,e,code=400){const m=String(e?.message||e||'Unknown error').replace(/https?:\/\/[^\s<>"']+/g,'[media URL]');log('error',m);json(res,code,{error:m.slice(0,1800)})}
 const STATIC={'/':'index.html','/ui.js':'ui.js','/ui.css':'ui.css'};
 const TYPES={'index.html':'text/html; charset=utf-8','ui.js':'application/javascript; charset=utf-8','ui.css':'text/css; charset=utf-8'};
@@ -284,7 +284,7 @@ const server=http.createServer(async(req,res)=>{
            if(checkOnly){await discardPrepared(source);return;}
            const duration=await probeDuration(source);
            if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
-           worker.duration=duration;worker.position=Number(b.position)||0;worker.status='starting';
+           worker.duration=duration;worker.position=Number(b.position)||0;worker.failReason='';worker.status='starting';
            await commands.request({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);

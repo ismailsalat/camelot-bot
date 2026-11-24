@@ -5,6 +5,8 @@ export interface Session {
   id:string;guild:string;channel:string;message?:string;owner:string|null;
   title?:Title;episodes:Episode[];episode:number;sources:string[];source:string;actualSource?:string;
   lang:'sub'|'dub';phase:Phase;position:number;duration:number|null;changed:number;note:string;
+  /** Anime waiting to play after the current one, in order. */
+  queue?:Title[];
 }
 export function seconds(text:string, current=0):number {
   const s=text.trim();

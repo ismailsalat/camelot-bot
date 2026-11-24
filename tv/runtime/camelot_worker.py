@@ -125,6 +125,10 @@ davey_compat.patch_reinit(discord.voice_state)
 video_compat.patch_video(discord.gateway)
 
 class CamelotOnline(commands.Bot):
+    # Defaults at class level so partially built instances (tests) behave.
+    target_channel=None
+    gone_ticks=0
+    fail_reason=''
     def __init__(self, reader=None):
         super().__init__(command_prefix='!',help_command=None,self_bot=False)
         self.input=reader
@@ -138,6 +142,9 @@ class CamelotOnline(commands.Bot):
         self.reported=False
         self.started=0.0
         self.monitor_task=None
+        self.target_channel=None
+        self.gone_ticks=0
+        self.fail_reason=''
 
     async def setup_hook(self):
         self.control_task=asyncio.create_task(self.read_controls())
@@ -208,6 +215,7 @@ class CamelotOnline(commands.Bot):
         channel=guild.get_channel(int(channel_id)) if guild else None
         if not isinstance(channel,discord.VoiceChannel):raise ValueError('Voice channel unavailable')
         self.mode='switching'
+        self.target_channel=channel_id;self.gone_ticks=0;self.fail_reason=''
         await self.live.stop()
         ACTIVE_LINKS.add(url)
         headers=clean_headers(job.get('headers'))
@@ -265,7 +273,7 @@ class CamelotOnline(commands.Bot):
             await self.live.stop()
             guild=self.get_guild(GUILD_ID)
             if guild and guild.voice_client:await guild.voice_client.disconnect(force=True)
-            self.job=None;self.offset=0;self.mode='connected'
+            self.job=None;self.offset=0;self.mode='connected';self.target_channel=None;self.gone_ticks=0
             _source_headers.clear();_source_hls.clear();_source_subtitles.clear();ACTIVE_HEADERS.clear();ACTIVE_LINKS.clear()
             emit('stopped')
 
@@ -278,8 +286,26 @@ class CamelotOnline(commands.Bot):
             async with self.play_lock:
                 await self.monitor_once()
 
+    async def voice_lost(self):
+        """True once the account has been out of its voice channel for 3 checks in a row (kicked, moved or
+        disconnected). A short debounce avoids reacting to Discord's own brief voice reconnects."""
+        if not self.target_channel or self.mode not in ('standby','starting','streaming','paused'):
+            self.gone_ticks=0;return False
+        guild=self.get_guild(GUILD_ID)
+        vc=guild.voice_client if guild else None
+        here=getattr(getattr(vc,'channel',None),'id',None)
+        gone=vc is None or not vc.is_connected() or str(here)!=str(self.target_channel)
+        self.gone_ticks=self.gone_ticks+1 if gone else 0
+        return self.gone_ticks>=3
+
     async def monitor_once(self):
         # Caller holds play_lock throughout cleanup. A new episode cannot overlap it.
+        if await self.voice_lost():
+            # Resume point for the parent, which rejoins and carries on until the controller presses Stop.
+            self.offset=self.position();pos=self.offset
+            await self.live.stop();self.mode='failed';self.fail_reason='kicked';self.gone_ticks=0
+            log.warning('Removed from the voice channel; asking the parent to rejoin.')
+            emit('failed',reason='kicked',position=pos);return
         p=self.live.player
         if self.mode not in ('starting','streaming'):return
         if p and p._frames_emitted>0 and not self.reported:

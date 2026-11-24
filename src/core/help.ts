@@ -124,11 +124,11 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
 
   if (key === 'streaming') {
     body.addTextDisplayComponents(text(isModuleEnabled(settings, key)
-      ? 'Join a voice channel → `/stream` or `!stream` → **Find anime** → **Play**. The controls appear in that VC’s chat.'
+      ? 'Join a voice channel → `/stream` or `!stream` → **Find anime** → pick one. Camelot counts 5-4-3-2-1 and starts it by itself. The controls appear in that VC’s chat, and `/stream` always puts a fresh panel at the bottom.'
       : 'Streaming is off. An admin can turn it on in `/settings` → **Streaming**, then save the account there.'));
     body.addTextDisplayComponents(text('If /stream is missing from Discord’s menu, type **!stream** in chat. This fallback also works with text commands turned off.'));
     body.addTextDisplayComponents(text('**Playback**\nPrevious ep · Next ep · Stop · Play/Pause\nBack 30 sec · Forward 30 sec · Custom time\nChoose a source from the dropdown if playback fails.'));
-    body.addTextDisplayComponents(text('**Taking turns**\nOne person controls the stream. **My turn** joins the queue. **Stop** ends the session and frees the next turn.'));
+    body.addTextDisplayComponents(text('**Taking turns**\nOne person controls the stream. **My turn** joins the queue. **Stop** ends the session and frees the next turn.\n\n**Queue**\nThe **Queue** button lets anyone in the VC add anime to play after this one. If Camelot is kicked from the VC it comes back until someone presses **Stop**.'));
   }
 
   const group = commands.find((command) => command.settingsGroup)?.settingsGroup ?? module.settingsGroups[0];
