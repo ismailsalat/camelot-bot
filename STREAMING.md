@@ -140,3 +140,10 @@ The 11 added tests cover actual text routing, module/voice restrictions, busy-se
 - **One Go Live restart instead of two when switching.** `/api/play` only shows the standby slate when nothing is live. If an episode is already streaming, it keeps playing while the next one is verified, then swaps once (saves ~8 s).
 - **Stutter:** x264 presets slower than `superfast` are ignored (a warning is logged). `veryfast` fell behind real time on Railway's shared CPUs (late frames, ffmpeg read stalls). Set `STREAM_ALLOW_SLOW_PRESET=1` to force one. Best fix: delete `STREAM_X264_PRESET` and `STREAM_VIDEO_BITRATE` in Railway.
 - **"Loading" after being away:** this is the Discord client re-subscribing to the stream when a tab/window is hidden. The stream sends a keyframe every second so it recovers quickly; Camelot cannot prevent the client's own pause.
+
+## v21 — no more reconnecting, smoother picture
+
+- **Seek, resume, pause and episode changes keep the Go Live connection.** Previously every one of them deleted the stream and built a new one (about 8-13 s of "reconnecting"). Now only the video (FFmpeg + audio pipe) is replaced on the existing connection (`LiveSession.swap_media/attach`). RTP sequence numbers, timestamps and nonces carry on from the old player so Discord sees one continuous stream and no nonce is reused. If the connection is not healthy, or the swap fails, it falls back to the old full restart automatically (the log says "Could not reuse the Go Live connection").
+- **Smoother video:** keyframe packets are paced (`STREAM_PACKET_PACE` defaults to 0.6) instead of sent as one burst; video bitrate is capped at 4000k for 720p (6000k for 1080p) and the rate-control buffer is halved, so keyframes stay small. Opt out with `STREAM_ALLOW_HIGH_BITRATE=1`. Default x264 preset is now `superfast` (`ultrafast` was the pinned default and the least efficient).
+- Delete `STREAM_X264_PRESET` and `STREAM_VIDEO_BITRATE` from Railway; the defaults are now right.
+- Tests: `test_live_session.py` (SwapTests), `test_ffmpeg_options.py` (BitrateCapTests, SlowPresetTests).

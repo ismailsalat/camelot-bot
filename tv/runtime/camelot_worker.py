@@ -22,6 +22,9 @@ os.close(_null_fd)
 import env_clean
 import nal_guard
 env_clean.report(env_clean.clean_stream_env())
+# Spread each keyframe's packets over most of a frame interval instead of sending them as one burst
+# (bursts overran Discord's relay and froze the picture a few seconds into playback).
+os.environ.setdefault('STREAM_PACKET_PACE','0.6')
 
 import discord
 import discord.gateway
@@ -85,6 +88,10 @@ def clean_headers(raw):
 X264_PRESETS={'ultrafast','superfast','veryfast','faster','fast','medium'}
 SLOW_PRESETS={'veryfast','faster','fast','medium'}
 _warned_preset=[]
+_logged_once=set()
+def _log_once(key,fmt,*args):
+    if key in _logged_once:return
+    _logged_once.add(key);logging.getLogger('camelot_online').info(fmt,*args)
 def _tune_x264(cmd):
     """Software-encoder quality knobs that the pinned player does not expose."""
     if '-c:v' not in cmd or cmd[cmd.index('-c:v')+1]!='libx264':return
@@ -103,6 +110,7 @@ def _tune_x264(cmd):
             _warned_preset.append(preset)
             logging.getLogger('camelot_online').warning('STREAM_X264_PRESET=%s is too slow for this host; using superfast (set STREAM_ALLOW_SLOW_PRESET=1 to force it)',preset)
         preset='superfast'
+    if not preset:preset='superfast'  # ultrafast (the pinned default) is the least efficient; superfast is just as light here
     if preset in X264_PRESETS and '-preset' in cmd:cmd[cmd.index('-preset')+1]=preset
     # -tune zerolatency turns on sliced threads: with -threads 4 every picture became 4 slices, and the player
     # sends each slice as its own frame (4x the frame rate) while tiny non-first slices can crash libdave.
@@ -128,6 +136,8 @@ def _headers_ffmpeg_cmd(self):
     cmd=apply_source_options(cmd, _source_headers.get(url, {}), _source_hls.get(url, False), _source_subtitles.get(url))
     _tune_x264(cmd)
     repaired=env_clean.safe_bitrate_args(cmd)
+    if '-c:v' in cmd and cmd[cmd.index('-c:v')+1]=='libx264':
+        for note in env_clean.cap_bitrate_args(cmd):_log_once('rate:'+note,'Smoother video settings: %s',note)
     if repaired:logging.getLogger('camelot_online').warning('Repaired invalid FFmpeg bitrate settings: %s',', '.join(repaired))
     index=cmd.index('-i')
     offset=_source_offsets.get(url,0)
@@ -257,7 +267,14 @@ class CamelotOnline(commands.Bot):
         if not isinstance(channel,discord.VoiceChannel):raise ValueError('Voice channel unavailable')
         self.mode='switching'
         self.target_channel=channel_id;self.gone_ticks=0;self.fail_reason=''
-        await self.live.stop()
+        # Keep the Go Live connection when it is healthy and only replace the video. Starting a new
+        # stream takes ~8-13 s and made every episode change, seek and resume look like a reconnect.
+        vc=guild.voice_client
+        reuse=bool(vc and vc.is_connected() and getattr(getattr(vc,'channel',None),'id',None)==channel.id and self.live.can_swap(channel_id))
+        if reuse:
+            try:await self.live.swap_media()
+            except Exception:reuse=False
+        if not reuse:await self.live.stop()
         ACTIVE_LINKS.add(url)
         headers=clean_headers(job.get('headers'))
         _source_headers.clear();_source_hls.clear();_source_subtitles.clear();_source_offsets.clear()
@@ -273,7 +290,13 @@ class CamelotOnline(commands.Bot):
             self.job=dict(job);self.offset=offset
         self.reported=False
         self.started=time.monotonic()
-        await self.live.start(guild,channel,url)
+        if reuse:
+            try:await self.live.attach(url)
+            except Exception as exc:
+                logging.getLogger('camelot_online').warning('Could not reuse the Go Live connection (%s); reconnecting',str(exc)[:120])
+                await self.live.stop()
+                await self.live.start(guild,channel,url)
+        else:await self.live.start(guild,channel,url)
         self.mode='standby' if standby else 'starting'
         emit(self.mode,channel=channel_id,title=str(job.get('title','Camelot TV'))[:80],position=self.position())
 

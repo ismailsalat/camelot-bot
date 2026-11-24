@@ -49,7 +49,6 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(.01);ticks.append('alive')
         await asyncio.gather(s.stop(),tick());self.assertEqual(ticks,['alive'])
 
-if __name__=='__main__':unittest.main()
 
 class CleanupFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_stuck_video_still_closes_audio_and_poisoned_session_cannot_restart(self):
@@ -133,3 +132,54 @@ class RestartRetryTests(unittest.IsolatedAsyncioTestCase):
                 await live.LiveSession(None).start(types.SimpleNamespace(id=1,voice_client=None),types.SimpleNamespace(id=2),'https://x')
         finally:
             live.asyncio=asyncio
+
+class SwapTests(unittest.IsolatedAsyncioTestCase):
+    async def test_swap_keeps_connection_and_continues_rtp_counters(self):
+        events=[]
+        class Task:
+            def done(self):return False
+        class Conn:
+            channel_id=7;_poll_task=Task()
+            async def disconnect(self):events.append('disconnect')
+        class Old:
+            _proc=None;_seq=500;_ts=9000;_nonce=[0x80000010]
+            def stop(self):events.append('old stop')
+            def join(self,t):pass
+            def is_alive(self):return False
+        class OldAudio:
+            _seq=40;_ts=1920;_nonce=12
+            def stop(self):pass
+            def join(self,t):pass
+        class Reader:
+            def close(self):events.append('pipe close')
+        made={}
+        class New:
+            audio_fifo='/dev/null'
+            def __init__(self,**kw):self._seq=0;self._ts=0;self._nonce=[0x80000000];made['video']=self
+            def start(self):events.append('new start')
+            def is_alive(self):return True
+            def is_source_active(self):return True
+        class NewAudio:
+            def __init__(self,*a):self._seq=0;self._ts=0;self._nonce=0;made['audio']=self
+            def start(self):events.append('audio start')
+        class FakeReader:
+            def __init__(self,*a):pass
+        live.H264VideoPlayer=New;live.GoLiveAudioSender=NewAudio;live.PCMReader=FakeReader;live._GoLiveVCProxy=lambda c:c
+        s=live.LiveSession(None);s.connection=Conn();s.player=Old();s.sender=OldAudio();s.reader=Reader()
+        self.assertTrue(s.can_swap('7'));self.assertFalse(s.can_swap('8'))
+        await s.swap_media();self.assertNotIn('disconnect',events)
+        await s.attach('https://example.test/video')
+        self.assertNotIn('disconnect',events);self.assertIs(s.connection.__class__,Conn)
+        self.assertEqual(made['video']._seq,500);self.assertGreaterEqual(made['video']._ts,9000)
+        self.assertEqual(made['video']._nonce[0],0x80000010)
+        self.assertEqual((made['audio']._seq,made['audio']._nonce),(40,12));self.assertGreaterEqual(made['audio']._ts,1920)
+
+    async def test_poisoned_or_dead_connection_is_not_reused(self):
+        class Task:
+            def done(self):return True
+        class Conn:
+            channel_id=7;_poll_task=Task()
+        s=live.LiveSession(None);s.connection=Conn()
+        self.assertFalse(s.can_swap('7'))
+
+if __name__=='__main__':unittest.main()

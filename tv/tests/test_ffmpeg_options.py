@@ -134,3 +134,28 @@ class SingleSliceTests(unittest.TestCase):
         self.assertIn('aud=1', params); self.assertIn('slices=1', params); self.assertIn('sliced-threads=0', params)
         again = list(cmd); ns['_tune_x264'](again)  # idempotent
         self.assertEqual(again[again.index('-x264-params') + 1].split(':').count('slices=1'), 1)
+
+
+class BitrateCapTests(unittest.TestCase):
+    def setUp(self):
+        import sys, pathlib
+        sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "runtime"))
+    def _cmd(self, br, res='scale=1280:720'):
+        return ['ffmpeg', '-vf', res, '-c:v', 'libx264', '-b:v', br, '-maxrate', br, '-bufsize', br]
+    def test_720p_is_capped_and_buffer_halved(self):
+        import env_clean
+        cmd = self._cmd('10000k'); notes = env_clean.cap_bitrate_args(cmd, {})
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '4000k'); self.assertEqual(cmd[cmd.index('-maxrate') + 1], '4000k')
+        self.assertEqual(cmd[cmd.index('-bufsize') + 1], '2000k'); self.assertTrue(notes)
+    def test_lower_bitrate_is_kept(self):
+        import env_clean
+        cmd = self._cmd('2500k'); env_clean.cap_bitrate_args(cmd, {})
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '2500k'); self.assertEqual(cmd[cmd.index('-bufsize') + 1], '1250k')
+    def test_opt_out_keeps_high_bitrate(self):
+        import env_clean
+        cmd = self._cmd('10000k'); env_clean.cap_bitrate_args(cmd, {'STREAM_ALLOW_HIGH_BITRATE': '1'})
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '10000k')
+    def test_1080p_allows_more(self):
+        import env_clean
+        cmd = self._cmd('12000k', 'scale=1920:1080'); env_clean.cap_bitrate_args(cmd, {})
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '6000k')

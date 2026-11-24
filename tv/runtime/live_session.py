@@ -37,6 +37,7 @@ class LiveSession:
         self.player = self.sender = self.connection = self.reader = None
         self.cleanup = None
         self.poisoned = False
+        self.last = None
     async def stop(self):
         if not self.cleanup:self.cleanup=asyncio.create_task(self._stop())
         task=self.cleanup
@@ -49,8 +50,24 @@ class LiveSession:
             if task.done() and self.cleanup is task:self.cleanup=None
 
     async def _stop(self):
-        player, sender, conn, reader = self.player, self.sender, self.connection, self.reader
-        self.player = self.sender = self.connection = self.reader = None
+        conn = self.connection
+        self.connection = None
+        try:
+            await self._stop_media()
+        finally:
+            if conn:
+                try:await asyncio.wait_for(conn.disconnect(), 5)
+                except Exception:self.poisoned=True
+
+    async def _stop_media(self):
+        """Stop the encoder, audio sender and pipe; the Go Live connection itself stays up."""
+        player, sender, reader = self.player, self.sender, self.reader
+        self.player = self.sender = self.reader = None
+        try:
+            self.last = {'video': player and (player._seq, player._ts, player._nonce[0]),
+                         'audio': sender and (sender._seq, sender._ts, sender._nonce), 'at': time.monotonic()}
+        except AttributeError:
+            self.last = {'at': time.monotonic()}
         try:
             if player:
                 player.stop()
@@ -70,16 +87,57 @@ class LiveSession:
             self.poisoned = True
             raise
         finally:
-            try:
-                if sender:
-                    sender.stop()
-                    await asyncio.to_thread(sender.join, 2)
-                    if hasattr(sender,'is_alive') and sender.is_alive():self.poisoned=True
-                if reader:reader.close()
-            finally:
-                if conn:
-                    try:await asyncio.wait_for(conn.disconnect(), 5)
-                    except Exception:self.poisoned=True
+            if sender:
+                sender.stop()
+                await asyncio.to_thread(sender.join, 2)
+                if hasattr(sender,'is_alive') and sender.is_alive():self.poisoned=True
+            if reader:reader.close()
+
+    def can_swap(self, channel_id):
+        """True when the Go Live connection is healthy and in this channel, so only the video needs replacing."""
+        conn = self.connection
+        task = getattr(conn, '_poll_task', None) if conn else None
+        return bool(conn and not self.poisoned and task is not None and not task.done()
+                    and str(getattr(conn, 'channel_id', channel_id)) == str(channel_id))
+
+    async def swap_media(self):
+        """Stop only the current video/audio; call attach() next."""
+        await self._stop_media()
+
+    async def attach(self, url):
+        """Start a new video on the existing Go Live connection (no new stream, no 1.5 s wait, no reconnect).
+        RTP sequence numbers, timestamps and nonces continue where the old player stopped, so the receiver
+        sees one uninterrupted stream and no nonce is ever reused."""
+        conn = self.connection
+        if not conn:raise RuntimeError('No Go Live connection to reuse')
+        gap = max(0.0, time.monotonic() - (self.last or {}).get('at', time.monotonic()))
+        try:
+            player = H264VideoPlayer(url=url, voice_client=_GoLiveVCProxy(conn),
+                                     fps=_stream_fps(), live=False, audio=True)
+            last = (self.last or {}).get('video')
+            if last:
+                player._seq = last[0]
+                player._ts = (last[1] + int(gap * 90000)) & 0xFFFFFFFF
+                player._nonce[0] = last[2]
+            self.player = player
+            player.start()
+            deadline = time.monotonic() + 15
+            while not os.path.exists(player.audio_fifo):
+                if time.monotonic() > deadline or not player.is_alive():
+                    raise RuntimeError('Video player failed to create audio pipe')
+                await asyncio.sleep(.05)
+            self.reader = PCMReader(player.audio_fifo, player)
+            sender = GoLiveAudioSender(self.reader, conn, player.is_source_active)
+            audio = (self.last or {}).get('audio')
+            if audio:
+                sender._seq = audio[0]
+                sender._ts = (audio[1] + int(gap * 48000)) & 0xFFFFFFFF
+                sender._nonce = audio[2]
+            self.sender = sender
+            sender.start()
+        except BaseException:
+            raise
+
     def running_on(self, channel_id):
         """True when a stream is already live in this voice channel."""
         conn = self.connection
