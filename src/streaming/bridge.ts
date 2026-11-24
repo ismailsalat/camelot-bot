@@ -44,7 +44,14 @@ export class Bridge {
     if(!response.ok)throw new Error(String(result.error||'TV request failed').replace(/https?:\/\/\S+/g,'[source]').slice(0,400));
     return result as T;
   }
+  private connecting:Promise<void>|null=null;
+  /** One connect at a time: a background warm-up and a Play press share the same attempt. */
   async connect(guild:string,token:string){
+    if(this.connecting)return this.connecting;
+    this.connecting=this.doConnect(guild,token);
+    try{await this.connecting}finally{this.connecting=null}
+  }
+  private async doConnect(guild:string,token:string){
     await this.start();let state=await this.call<WorkerState>('/api/state');
     if(state.connected&&state.guild===guild)return;
     if(state.status!=='offline'){await this.close();await this.start()}

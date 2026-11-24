@@ -57,15 +57,19 @@ class X264TuningTests(unittest.TestCase):
         exec(src[start:end], ns)
         os.environ['STREAM_X264_PRESET'] = 'veryfast'
         try:
-            cmd = ['ffmpeg', '-vf', 'subs.ass,scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
+            cmd = ['ffmpeg', '-i', 'in.m3u8', '-vf', 'subs.ass,scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
             ns['_tune_x264'](cmd)
             self.assertEqual(cmd[cmd.index('-preset') + 1], 'veryfast')
-            self.assertIn('scale=1280:720:flags=lanczos', cmd[2])
-            hw = ['ffmpeg', '-vf', 'scale_vaapi=w=1280:h=720', '-c:v', 'h264_vaapi', '-preset', 'ultrafast']
+            self.assertIn('scale=1280:720:flags=lanczos', cmd[cmd.index('-vf') + 1])
+            # thread caps: one before the input (decoder), one before the encoder
+            self.assertEqual(cmd.count('-threads'), 2)
+            self.assertLess(cmd.index('-threads'), cmd.index('-i'))
+            self.assertEqual(cmd[cmd.index('-threads') + 1], '4')
+            hw = ['ffmpeg', '-i', 'in', '-vf', 'scale_vaapi=w=1280:h=720', '-c:v', 'h264_vaapi', '-preset', 'ultrafast']
             ns['_tune_x264'](hw)
             self.assertEqual(hw[hw.index('-preset') + 1], 'ultrafast')
             os.environ['STREAM_X264_PRESET'] = 'bogus'
-            c2 = ['ffmpeg', '-vf', 'scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
+            c2 = ['ffmpeg', '-i', 'in', '-vf', 'scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
             ns['_tune_x264'](c2)
             self.assertEqual(c2[c2.index('-preset') + 1], 'ultrafast')
         finally:

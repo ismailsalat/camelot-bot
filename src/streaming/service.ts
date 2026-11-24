@@ -158,7 +158,18 @@ export class Streaming {
     s.sources=[...new Set<string>(loaded.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
     const chosen=loaded.episodes.find((e:any)=>e.number===ep.number);
     if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
-    const result=await this.bridge.call('/api/play',{guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:chosen.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,position});
+    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:chosen.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,position};
+    let result:any;
+    try{result=await this.bridge.call('/api/play',playRequest)}
+    catch(error){
+      // If the streaming process itself died mid-start, every source then reports "not connected".
+      // That is not the episode's fault: reconnect the account once and try again.
+      if(!(error instanceof Error)||!/Streaming account disconnected|Streamer is not connected/.test(error.message))throw error;
+      log.warn('Streaming worker stopped while starting playback; reconnecting once.');
+      s.note='Reconnecting the streaming account…';await this.paint();
+      await this.prepare();
+      result=await this.bridge.call('/api/play',playRequest);
+    }
     s.actualSource=result.provider;s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
   }
   private async release(note='Available. Use /stream to take a turn.'){
@@ -231,11 +242,23 @@ export class Streaming {
     if(this.session?.owner&&(this.session.guild!==member.guild.id||this.session.owner!==member.id)){
       return {content:'Streaming is in use. Join the queue for a turn.',components:[new ActionRowBuilder<any>().addComponents((await import('../core/ui.js')).button('tvr:queue','My turn'))]};
     }
-    await this.gate.run(async()=>{
-      await this.claim(member);await this.paint(true);
-      if(!this.session!.title){await this.prepare();await this.bridge.call('/api/standby',{channel:this.session!.channel})}
-    });
+    await this.gate.run(async()=>{await this.claim(member);await this.paint(true)});
+    // Logging the streaming account in takes ~7 s. Do it while the person picks an anime instead of
+    // making them wait on /stream; later steps join the same connection attempt.
+    this.warm();
     return {content:`Streaming controls are in <#${this.session!.channel}>.`,components:[]};
+  }
+  warming:Promise<void>|null=null;
+  private warm(){
+    const s=this.session;if(!s||s.title||this.warming)return;
+    this.warming=this.gate.run(async()=>{
+      if(this.session!==s||s.title)return;
+      await this.prepare();await this.bridge.call('/api/standby',{channel:s.channel});
+    }).catch(async(error:unknown)=>{
+      if(this.session!==s||this.closed||this.stopping)return;
+      log.warn('Streaming account could not be warmed up: '+(error instanceof Error?error.message:'unknown').slice(0,200));
+      s.phase='error';s.changed=Date.now();s.note=error instanceof Error?error.message:'Could not connect the streaming account.';this.persist();await this.paint().catch(()=>{});
+    }).finally(()=>{this.warming=null});
   }
   async handleText(message:Message<true>){
     if(message.author.bot||message.system||!message.member)return;

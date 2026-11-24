@@ -47,3 +47,37 @@ test('pasted tokens are cleaned of quotes and a Bot prefix before saving',()=>{
   saveToken('guild',`Bot ${raw}`);assert.equal(getToken('guild'),raw);
   assert.throws(()=>saveToken('guild','short'),/does not look valid/);
 });
+
+test('a worker that dies while starting Play is reconnected once and the episode still plays',async()=>{
+  const tv:any=new Streaming();const calls:string[]=[];let plays=0;
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}};
+  tv.paint=async()=>{};tv.persist=()=>{};
+  tv.prepare=async()=>{calls.push('prepare')};
+  tv.bridge={call:async(path:string)=>{
+    if(path.startsWith('/api/episodes'))return {sources:[{status:'checked',provider:'hianime'}],episodes:[{id:'e1',number:1}]};
+    plays++;calls.push('play');
+    if(plays===1)throw new Error('No playable video found from the matching sources. hianime: Streaming account disconnected. | anikoto: Streamer is not connected');
+    return {provider:'hianime'};
+  }};
+  await tv.startEpisode(0);
+  assert.deepEqual(calls,['prepare','play','prepare','play']);
+  assert.equal(tv.session.actualSource,'hianime');
+});
+
+test('an ordinary source failure is not retried as a crash',async()=>{
+  const tv:any=new Streaming();let plays=0;
+  tv.session={id:'s1',guild:'guild',channel:'voice',owner:'admin',episodes:[{id:'e1',number:1}],episode:0,sources:[],source:'auto',lang:'dub',phase:'idle',position:0,duration:null,changed:Date.now(),note:'',title:{id:'hianime:1',provider:'hianime',title:'Dr. Stone'}};
+  tv.paint=async()=>{};tv.persist=()=>{};tv.prepare=async()=>{};
+  tv.bridge={call:async(path:string)=>{if(path.startsWith('/api/episodes'))return {sources:[],episodes:[{id:'e1',number:1}]};plays++;throw new Error('allmanga: no source URLs')}};
+  await assert.rejects(tv.startEpisode(0),/no source URLs/);
+  assert.equal(plays,1);
+});
+
+test('a background warm-up and a later connect share one connection attempt',async()=>{
+  const {Bridge}=await import('../streaming/bridge.js');
+  const b:any=new Bridge();let started=0;
+  b.doConnect=async()=>{started++;await new Promise(r=>setTimeout(r,20))};
+  await Promise.all([b.connect('g','t'),b.connect('g','t')]);
+  assert.equal(started,1);
+  await b.connect('g','t');assert.equal(started,2);
+});

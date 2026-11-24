@@ -1,6 +1,7 @@
 import {WorkerCommands} from './src/commands.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import {spawn,execFile} from 'node:child_process';
 import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -30,15 +31,28 @@ if(CLOUD && ADMIN_KEY.length<20){console.error('CAMELOT_ADMIN_KEY must be at lea
 if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw new Error('Invalid PORT');
 const logs=[];
 let lastError='';
-const log=(kind,text)=>{
+const scrub=text=>{
   let msg=String(text||'').replace(/https?:\/\/[^\s<>"']+/g,'[media URL redacted]');
   for(const v of [process.env.CAMELOT_STREAMER_TOKEN,ADMIN_KEY,BRIDGE_KEY,worker?.token])if(v&&v.length>5) msg=msg.split(v).join('[redacted]');
-  msg=msg.slice(0,350);
+  return msg;
+};
+const log=(kind,text)=>{
+  const msg=scrub(text).slice(0,350);
   logs.push({time:new Date().toLocaleTimeString('en-US',{hour12:false}),kind,msg});
   if(logs.length>90)logs.shift();
   if(kind==='error') lastError=msg;
   console.log(`[${kind}] ${msg}`);
 };
+// Last worker output, printed if the worker dies from a signal so the cause is visible in the logs.
+const workerTail=[];
+let safeMode=false;
+function memoryReport(){
+  const rd=p=>{try{return readFileSync(p,'utf8').trim()}catch{return null}};
+  const max=rd('/sys/fs/cgroup/memory.max')||rd('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+  const kills=(rd('/sys/fs/cgroup/memory.events')||'').match(/oom_kill\s+(\d+)/)?.[1];
+  const limit=max&&/^\d+$/.test(max)&&Number(max)<2**50?Math.round(Number(max)/1048576)+' MB':'not readable';
+  return `Container memory limit: ${limit}; OOM kills so far: ${kills??'unknown'}`;
+}
 const worker={child:null,token:null,guild:null,ready:false,channels:[],account:null,voice:null,status:'offline',playing:null};
 function control(job){
   if(!worker.child||worker.child.killed||!worker.child.stdin.writable)throw new Error('Streamer is not connected');
@@ -55,6 +69,7 @@ function workerStart(token,guild){
     //   STREAM_RESOLUTION=1920:1080  STREAM_VIDEO_BITRATE=8000k   (needs more CPU)
     //   STREAM_X264_PRESET=veryfast|faster                         (better quality per bit, more CPU)
     STREAM_RESOLUTION:process.env.STREAM_RESOLUTION||'1280:720',STREAM_FPS:process.env.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'6000k',STREAM_X264_PRESET:process.env.STREAM_X264_PRESET||'superfast'};
+  if(safeMode)Object.assign(childEnv,{STREAM_RESOLUTION:'1280:720',STREAM_FPS:'30',STREAM_VIDEO_BITRATE:'4500k',STREAM_X264_PRESET:'superfast',STREAM_FFMPEG_THREADS:'3'});
   delete childEnv.CAMELOT_STREAMER_TOKEN;delete childEnv.CAMELOT_ADMIN_KEY;delete childEnv.CAMELOT_BRIDGE_KEY;
   const child=spawn(python,['-u',join(DIR,'runtime','camelot_worker.py')],{
     cwd:join(DIR,'runtime'),
@@ -64,9 +79,16 @@ function workerStart(token,guild){
   child.stdin.on('error',()=>{});
   child.stdin.write(JSON.stringify({token,guild:String(guild)})+'\n');
   child.on('error',e=>{commands.close();log('error','Python worker failed to start. Run setup or check Railway build logs.');if(worker.child===child){worker.child=null;worker.ready=false;worker.status='offline'}});
-  child.on('close',(code)=>{
-    log('info',`Streamer stopped (exit code ${code??'unknown'})`);
+  child.on('close',(code,signal)=>{
+    const abnormal=Boolean(signal)||(code!==null&&code!==0);
+    const wasReady=worker.ready;
+    log('info',`Streamer stopped (exit code ${code??'none'}${signal?`, signal ${signal}`:''})`);
     if(worker.child!==child)return;
+    if(abnormal){
+      for(const line of workerTail.slice(-12))log('error','worker: '+line);
+      log('error',memoryReport());
+      if(wasReady&&!safeMode){safeMode=true;log('warning','Safe mode on: the streamer crashed, so it will reconnect at 720p30 with fewer encoder threads.')}
+    }
     commands.close();
     worker.child=null;worker.ready=false;worker.status='offline';worker.playing=null;worker.channels=[];
     const old=activeCaptions;activeCaptions=null;retireCaptions(old);
@@ -82,6 +104,7 @@ function workerStart(token,guild){
   log('info','Connecting streaming account to the selected test server');
 }
 function consumeWorkerLine(line,kind){
+  workerTail.push(scrub(line).slice(0,300));if(workerTail.length>30)workerTail.shift();
   if(line.startsWith('TV_BRIDGE_JSON:')){
     try{
       const e=JSON.parse(line.slice('TV_BRIDGE_JSON:'.length));
@@ -165,7 +188,7 @@ async function body(req){
 }
 function state(){return {version:VERSION,cloud:CLOUD,status:worker.status,connected:worker.ready,account:worker.account,
  guild:worker.ready?worker.guild:null,channels:worker.channels,playing:worker.playing,
- position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+ position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
 function err(res,e,code=400){const m=String(e?.message||e||'Unknown error').replace(/https?:\/\/[^\s<>"']+/g,'[media URL]');log('error',m);json(res,code,{error:m.slice(0,1800)})}
 const STATIC={'/':'index.html','/ui.js':'ui.js','/ui.css':'ui.css'};
 const TYPES={'index.html':'text/html; charset=utf-8','ui.js':'application/javascript; charset=utf-8','ui.css':'text/css; charset=utf-8'};

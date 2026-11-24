@@ -3,7 +3,7 @@ Only receives commands from its local parent process via stdin (not from arbitra
 Discord prohibits self-bot user-account automation. Use a disposable test account.
 """
 from __future__ import annotations
-import asyncio, json, logging, os, re, sys, time
+import asyncio, faulthandler, json, logging, os, re, sys, time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 # the token line, the handshake then failed, and the account "could not connect" no
 # matter which token was used. Keep a private copy of the pipe for ourselves and
 # point fd 0 at /dev/null for every child process.
+faulthandler.enable()  # a native crash prints its Python stack to stderr instead of vanishing
 CONTROL_FD = os.dup(0)
 _null_fd = os.open(os.devnull, os.O_RDONLY)
 os.dup2(_null_fd, 0)
@@ -81,6 +82,13 @@ X264_PRESETS={'ultrafast','superfast','veryfast','faster','fast','medium'}
 def _tune_x264(cmd):
     """Software-encoder quality knobs that the pinned player does not expose."""
     if '-c:v' not in cmd or cmd[cmd.index('-c:v')+1]!='libx264':return
+    # Containers report the host's core count (often dozens) while their CPU/memory quota is a few
+    # vCPUs. Unbounded x264/decoder threads waste memory and hitch under the quota, so cap them.
+    raw=os.environ.get('STREAM_FFMPEG_THREADS','').strip()
+    threads=raw if raw.isdigit() and 1<=int(raw)<=16 else '4'
+    if '-threads' not in cmd:
+        cmd[cmd.index('-c:v'):cmd.index('-c:v')]=['-threads',threads]
+        cmd[cmd.index('-i'):cmd.index('-i')]=['-threads',threads]
     preset=os.environ.get('STREAM_X264_PRESET','').strip().lower()
     if preset in X264_PRESETS and '-preset' in cmd:cmd[cmd.index('-preset')+1]=preset
     if '-vf' in cmd:

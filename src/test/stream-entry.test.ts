@@ -38,7 +38,7 @@ test('shared opener sends busy users to the queue without taking over',async()=>
 test('shared opener opens actual VC panel and starts standby in order',async()=>{
  const tv:any=new Streaming();const calls:string[]=[];setByPath('guild','modules.streaming',true);
  tv.claim=async()=>{calls.push('claim');tv.session={channel:'voice'}};tv.paint=async(strict:boolean)=>{assert(strict);calls.push('panel')};tv.prepare=async()=>{calls.push('connect')};tv.bridge={call:async(path:string)=>{calls.push(path)}};
- const result=await tv.open(member());assert.deepEqual(calls,['claim','panel','connect','/api/standby']);assert(result.content.includes('<#voice>'));
+ const result=await tv.open(member());await tv.warming;assert.deepEqual(calls,['claim','panel','connect','/api/standby']);assert(result.content.includes('<#voice>'));
 });
 test('remote missing /stream is repaired in the global set even when the saved fingerprint matches',async()=>{
  meta.set('commands.fingerprint',commandFingerprint());const writes:any[]=[];
