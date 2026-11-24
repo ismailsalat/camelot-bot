@@ -81,6 +81,7 @@ export function panel(s:Session,queue:number){
   c.addSeparatorComponents(divider()).addActionRowComponents(
     row(...top),
     row(b('seek','Jump to time',!canSeek),b('lang',s.lang==='dub'?'Dub → Sub':'Sub → Dub',busy),b('search','Find anime',busy),b('lineup',`Queue${s.queue?.length?' · '+s.queue.length:''}`,!s.owner),b('queue',`My turn${queue?' · '+queue:''}`)),
+    row(b('goep','Go to episode',busy||!has||total<2),b('skipb','⏪ 10s',!canSeek),b('skipf','⏩ 30s',!canSeek),b('skipop','⏭ Skip intro',!canSeek)),
   );
   if((s.title?.family?.length||0)>1)c.addActionRowComponents(selectRow(new StringSelectMenuBuilder().setCustomId(id('season')).setPlaceholder('Season').setDisabled(busy).addOptions(seasonOptions(s))));
   if(total>1)c.addActionRowComponents(selectRow(new StringSelectMenuBuilder().setCustomId(id('epsel')).setPlaceholder(`Episode · ${total} total`).setDisabled(busy).addOptions(episodeOptions(s))));

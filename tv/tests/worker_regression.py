@@ -25,6 +25,17 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_premature_clean_eof_is_a_failure(self):
         bot=self.make_bot(rc=0,duration=120)
         await bot.monitor_once();self.assertEqual(bot.mode,'failed')
+    async def test_quality_switch_can_swap_the_stream_url_and_keeps_subtitles(self):
+        bot=self.make_bot(duration=1400);bot.mode='streaming'
+        bot.job={'duration':1400,'url':'https://cdn.example.com/720/i.m3u8','headers':{'Referer':'https://x/'},'isHLS':True,'subtitlePath':'/tmp/a.ass','quality':'720p'}
+        seen=[]
+        async def play(job):seen.append(job)
+        bot._play=play
+        await bot.seek({'position':60,'quality':'1080p','url':'https://cdn.example.com/1080/i.m3u8','headers':{'Referer':'https://x/'},'isHLS':True})
+        self.assertEqual(seen[0]['url'],'https://cdn.example.com/1080/i.m3u8')
+        self.assertEqual(seen[0]['quality'],'1080p');self.assertEqual(seen[0]['subtitlePath'],'/tmp/a.ass');self.assertEqual(seen[0]['position'],60)
+        await bot.seek({'position':90})                      # a plain seek keeps whatever stream is active
+        self.assertEqual(seen[1]['url'],'https://cdn.example.com/1080/i.m3u8')
     async def test_end_cleanup_cannot_overlap_next_play(self):
         bot=self.make_bot();entered=asyncio.Event();finish=asyncio.Event();order=[]
         async def stop(*_a):

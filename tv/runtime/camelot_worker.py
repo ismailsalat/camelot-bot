@@ -402,6 +402,9 @@ class CamelotOnline(commands.Bot):
             if not self.job:raise ValueError('No episode selected')
             position=float(job.get('position',0))
             if job.get('quality') in ('720p','1080p'):self.job['quality']=job['quality']
+            if job.get('url'):
+                # Switching between 720p and 1080p can mean a different stream of the same video.
+                self.job.update({'url':job['url'],'headers':job.get('headers') or self.job.get('headers') or {},'isHLS':bool(job.get('isHLS',self.job.get('isHLS')))})
             duration=float(self.job.get('duration') or 0)
             if not duration or not 0<=position<duration:raise ValueError('Seek outside episode duration')
             if self.mode=='paused':

@@ -12,6 +12,7 @@ import {searchAnimeCatalog,expandQuery,stripYear} from './src/catalog.mjs';
 import {verifiedPlan,offeredLanguages,tryPlayableEpisode} from './src/playback.mjs';
 import {makeEntity,attachCandidates,searchRows,displayTitle} from './src/identity.mjs';
 import {verifyEntity} from './src/resolve.mjs';
+import {chooseVariantUrl} from './src/variants.mjs';
 import {prepareCaptions,discardCaptions,describeTracks,SUBTITLE_CHOICES} from './src/subtitles.mjs';
 import {apiAccess,originAllowed} from './src/access.mjs';
 import {Timeline,redactText,redactArgs} from './src/timeline.mjs';
@@ -21,7 +22,7 @@ import {execFileSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
 import os from 'node:os';
 
-const VERSION='0.14.0';
+const VERSION='0.15.0';
 const DIR=resolve(fileURLToPath(new URL('.',import.meta.url)));
 const INTERNAL=process.env.CAMELOT_INTERNAL==='1';
 const CLOUD=!INTERNAL&&Boolean(process.env.RAILWAY_ENVIRONMENT||process.env.CAMELOT_BIND_ALL);
@@ -396,6 +397,14 @@ const server=http.createServer(async(req,res)=>{
        const verified=await verifiedFor(entity);
        const shownTitle=shownName(entity);
        let queue=verifiedPlan(verified.accepted,{provider,media},chosen.number,lang);
+       // A source that froze mid-episode is skipped (unless it is the only one) and counted against its health.
+       const avoid=(Array.isArray(b.avoid)?b.avoid:[]).map(x=>String(x).slice(0,40)).slice(0,6);
+       if(avoid.length){
+         for(const p of avoid){health.failure(p,'timeout');timeline.record('stall_failover',{cid,gen:generation,provider:p,position:Number(b.position)||0})}
+         log('warning',`Source ${avoid.join(', ')} froze during playback; trying another source.`);
+         const others=queue.filter(q=>!avoid.includes(q.provider));
+         if(others.length)queue=others;
+       }
        if(b.source&&b.source!=='auto'){if(!queue.some(q=>q.provider===b.source))throw new Error('Selected source does not match this title');queue.sort((a,z)=>Number(z.provider===b.source)-Number(a.provider===b.source));}
        if(!queue.length){
          const offered=offeredLanguages(verified.accepted,chosen.number).map(l=>l.toUpperCase());
@@ -442,7 +451,12 @@ const server=http.createServer(async(req,res)=>{
            if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
            worker.duration=duration;worker.position=Number(b.position)||0;worker.failReason='';worker.status='starting';
            timeline.record('worker_play_sent',{cid,gen:generation,quality,duration_known:duration!==null,height:height||null});
-           await commands.request({op:'play',cid,gen:generation,duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
+           // Send the stream that matches the picture size, not the biggest one the playlist offers (less to download and decode).
+           const pick=source.isHLS&&!process.env.STREAM_NO_VARIANT?await chooseVariantUrl(source.url,source.headers,{target:quality==='1080p'?1080:720}):null;
+           const playUrl=pick?.url||source.url;
+           if(pick){log('info',`Video stream: using the ${pick.height}p variant (${(pick.bandwidth/1e6).toFixed(1)} Mbit/s) of ${pick.of.join('/')}p for a ${quality} picture`);timeline.record('variant_chosen',{cid,gen:generation,height:pick.height,bandwidth:pick.bandwidth,of:pick.of})}
+           worker.sourceUrls={master:{url:source.url,headers:source.headers,isHLS:source.isHLS},variant:pick?{url:pick.url}:null,current:playUrl};
+           await commands.request({op:'play',cid,gen:generation,duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:playUrl,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);
          }
@@ -493,7 +507,13 @@ const server=http.createServer(async(req,res)=>{
      if(path==='/api/seek'&&(!Number.isFinite(b.position)||!worker.duration||b.position<0||b.position>=worker.duration))throw new Error('Choose a time inside the episode');
      if(path==='/api/seek'&&b.quality==='1080p'&&!(worker.maxHeight>=1000))b.quality='720p';
      if(path==='/api/seek'&&(b.quality==='720p'||b.quality==='1080p'))worker.quality=b.quality;
-     await commands.request({op:path.split('/').pop(),position:b.position,channel:b.channel,quality:path==='/api/seek'?b.quality:undefined});
+     let swap={};
+     const su=worker.sourceUrls;
+     if(path==='/api/seek'&&su&&(b.quality==='720p'||b.quality==='1080p')){
+       const want=b.quality==='1080p'?su.master.url:(su.variant?.url||su.master.url);
+       if(want!==su.current){swap={url:want,headers:su.master.headers,isHLS:su.master.isHLS};su.current=want}
+     }
+     await commands.request({op:path.split('/').pop(),position:b.position,channel:b.channel,quality:path==='/api/seek'?b.quality:undefined,...swap});
      return json(res,202,{ok:true});
    }
    if(path==='/api/stop'&&req.method==='POST'){

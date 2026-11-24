@@ -11,12 +11,16 @@ import {botTimeline} from './timeline.js';
 import {addToQueue,hasPanelControls,queueView,removeFromQueue,takeNext} from './queue.js';
 import {Gate,boundedPosition,clock,seconds,type Session,type Title} from './model.js';
 import {withFamily} from './seasons.js';
+import {parseEpisodeInput} from './episodes.js';
+import {StallWatch} from './stall.js';
 import {clearToken,getToken,restoreSession,saveSession,saveToken} from './store.js';
 import {inputModal,panel,settingsCard} from './ui.js';
 
+/** How long the stream is watched before judging whether it froze (the poll runs every few seconds). */
+const STALL_WINDOW_MS=12000;
 type Waiter={guild:string;user:string;channel:string};
 /** Buttons and menus that live on the main panel; only the newest panel message may use them. */
-const PANEL_OPS=new Set(['prev','next','stop','play','seek','epsel','season','quality','search','lang','lineup','source']);
+const PANEL_OPS=new Set(['prev','next','stop','play','seek','goep','skipb','skipf','skipop','epsel','season','quality','search','lang','lineup','source']);
 /** Queue actions anyone in the voice channel may use (removing and clearing still need the controller). */
 const SHARED_OPS=new Set(['lineup','qadd','qaddInput','qpick']);
 export class Streaming {
@@ -41,6 +45,10 @@ export class Streaming {
   private retries=0;
   private lastPosition=0;
   private lastMotion=Date.now();
+  /** Playback progress check: the stream counts as frozen when it advances much slower than real time. */
+  private watch=new StallWatch(STALL_WINDOW_MS);
+  private stalls=0;
+  private avoid:string[]=[];
   private closed=false;
   private forceRepost=false;
   private rejoinWanted=false;
@@ -200,6 +208,8 @@ export class Streaming {
   private async startEpisode(position:number){
     const s=this.session!,ep=s.episodes[s.episode];
     if(!s.title||!ep)throw new Error('Choose an anime first.');
+    if(this.initiator!=='recovery')this.stalls=0;
+    this.watch.reset();
     s.phase='loading';s.note='Finding a working source…';s.position=position;s.changed=Date.now();await this.paint();
     botTimeline.mark('panel_loading_painted',{cid:this.cid});
     await this.prepare();
@@ -207,7 +217,7 @@ export class Streaming {
     // service for it again re-inspected every source (~4 s). A restarted service is handled by the retry below.
     const cid=`${s.id.slice(0,4)}-${++this.playCounter}`;this.cid=cid;
     botTimeline.mark('play_requested',{cid,episode:ep.number,lang:s.lang,source:s.source,quality:s.quality||'720p',initiated_by:this.initiator});
-    const playRequest={cid,initiatedBy:this.initiator,guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position};
+    const playRequest={cid,initiatedBy:this.initiator,guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position,avoid:this.avoid};this.avoid=[];
     let result:any;
     try{result=await this.bridge.call('/api/play',playRequest)}
     catch(error){
@@ -286,9 +296,14 @@ export class Streaming {
         if(this.rejoinWanted){await this.rejoin(s);return}
         if(w.status==='streaming'){
           s.phase='playing';s.position=w.position;s.duration=w.duration;s.note='';
+          // A source that stops delivering leaves the stream "playing" at under 1 fps while the position creeps forward,
+          // so "position increased" is not enough. Compare how far the video advanced with how much time passed.
+          const verdict=this.watch.check(s.position,Date.now(),Date.now()-s.changed);
+          if(verdict&&!verdict.healthy){await this.stallFailover(s,verdict.advanced,verdict.elapsed);return}
+          if(verdict?.healthy)this.stalls=0;
           if(s.position>this.lastPosition){this.lastMotion=Date.now();this.lastPosition=s.position;if(Date.now()-s.changed>15000)this.retries=0;}
           else if(Date.now()-this.lastMotion>60000){await this.recoverLocked();return}
-        }else if(w.status==='paused'){s.phase='paused';s.position=w.position;}
+        }else if(w.status==='paused'){this.watch.reset();s.phase='paused';s.position=w.position;}
         else if(w.status==='ended'){
           if(s.episode>=s.episodes.length-1&&await this.advanceQueue(s))return;
           if(settings.autoNext&&s.episode<s.episodes.length-1){s.episode++;s.duration=null;s.position=0;await this.play(0,'auto');}
@@ -389,6 +404,17 @@ export class Streaming {
       log.warn('Auto-start did not run: '+(error instanceof Error?error.message.slice(0,160):'unknown'));
     }
   }
+  /** The video froze (the source stopped sending data). Move to another source at the same spot instead of waiting for a person to notice. */
+  private async stallFailover(s:Session,advanced:number,elapsed:number){
+    this.watch.reset();
+    const bad=s.actualSource;
+    botTimeline.mark('stall_detected',{cid:this.cid,provider:bad,position:Math.round(s.position),advanced_s:Math.round(advanced*10)/10,over_s:Math.round(elapsed)});
+    if(this.stalls++>=3){this.stalls=0;await this.fail(new Error('The video keeps freezing on every source. Try again in a minute, or pick another episode.'));return}
+    log.warn(`[stream] video froze: advanced ${advanced.toFixed(1)}s in ${Math.round(elapsed)}s on ${bad||'?'} at ${Math.round(s.position)}s; switching source (attempt ${this.stalls}/3)`);
+    this.avoid=bad?[bad]:[];
+    s.source='auto';s.note=`Video froze on ${bad||'the source'}. Switching to another source…`;
+    await this.play(s.position,'recovery');
+  }
   private async recoverLocked(){
     if(this.retries++>=2){await this.fail(new Error('Playback keeps failing. Choose another source or press Play.'));return}
     const s=this.session!;s.source='auto';s.note='Reconnecting…';await this.play(s.position,'recovery');
@@ -469,8 +495,10 @@ export class Streaming {
         if(!s.owner)throw new Error('Start Streaming with /stream first.');
         if(s.guild!==member.guild.id||member.voice.channelId!==s.channel)throw new Error('Join the active voice channel to use the queue.');
       }else this.controller(member);
-      if(i.isButton()&&['search','seek','qadd'].includes(op||'')){
-        const config=op==='search'?['Find anime','Anime name','Dr. STONE']:op==='qadd'?['Add to queue','Anime name','Dr. STONE']:['Jump to time',`Now ${clock(s.position)} of ${s.duration?clock(s.duration):'unknown'}`,'12:30, 750, +90, or -30'];
+      if(i.isButton()&&['search','seek','qadd','goep'].includes(op||'')){
+        const nums=s.episodes.map(e=>e.number);
+        if(op==='goep'&&!nums.length)throw new Error('Choose an anime first.');
+        const config=op==='goep'?['Go to episode',`Episode ${Math.min(...nums)}–${Math.max(...nums)} (now ${s.episodes[s.episode]?.number??'-'})`,'206, e206, +5, -3 or last']:op==='search'?['Find anime','Anime name','Dr. STONE']:op==='qadd'?['Add to queue','Anime name','Dr. STONE']:['Jump to time',`Now ${clock(s.position)} of ${s.duration?clock(s.duration):'unknown'}`,'12:30, 750, +90, or -30'];
         await i.showModal(inputModal(`tv:${s.id}:${op}Input`,config[0]!,config[1]!,config[2]!));return true;
       }
       if((i.isButton()||i.isStringSelectMenu())&&['qskip','qclear','qdel','qpick'].includes(op||''))await i.deferUpdate();
@@ -493,7 +521,7 @@ export class Streaming {
         if(SHARED_OPS.has(op||'')){if(!s.owner||member.voice.channelId!==s.channel)throw new Error('Join the active voice channel to use the queue.')}
         else this.controller(member);
         s.changed=Date.now();
-        if(['play','prev','next','episodeInput','epsel','season','pick','qskip'].includes(op||''))this.autoToken++;
+        if(['play','prev','next','episodeInput','goepInput','epsel','season','pick','qskip'].includes(op||''))this.autoToken++;
         const showQueue=async(note='')=>{this.persist();await this.paint();await i.editReply({...queueView(s,note),allowedMentions:NO_MENTIONS})};
         if(op==='lineup'){await showQueue();return}
         if(op==='qclear'){s.queue=[];await showQueue('Queue cleared.');return}
@@ -525,10 +553,13 @@ export class Streaming {
           const title=found.rows[Number(i.values[0])];if(!title)throw new Error('Choose a listed title.');
           await this.load(withFamily(title,found.rows,found.all));this.scheduleAutoStart(s);await reply('Starting automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');return;
         }
-                if(op==='next'||op==='prev'||op==='episodeInput'){
-          const index=op==='episodeInput'&&i.isModalSubmit()?s.episodes.findIndex(e=>e.number===Number(i.fields.getTextInputValue('value'))):s.episode+(op==='next'?1:-1);
-          if(index<0||index>=s.episodes.length)throw new Error('That episode is not available.');
-          s.episode=index;s.duration=null;s.position=0;this.retries=0;await this.play();
+                if(op==='next'||op==='prev'||op==='episodeInput'||op==='goepInput'){
+          // Typed episode numbers are checked first so the person is told what exists ("the last episode is 291") instead of nothing happening.
+          const typed=(op==='episodeInput'||op==='goepInput')&&i.isModalSubmit();
+          const index=typed?parseEpisodeInput(i.fields.getTextInputValue('value'),s.episodes,s.episode):s.episode+(op==='next'?1:-1);
+          if(index<0||index>=s.episodes.length)throw new Error(op==='next'?'That was the last episode.':'That is the first episode.');
+          if(typed&&index===s.episode&&['playing','paused'].includes(s.phase))throw new Error(`Episode ${s.episodes[index]!.number} is already playing.`);
+          s.episode=index;s.duration=null;s.position=0;this.retries=0;this.stalls=0;await this.play();
         }else if(op==='epsel'&&i.isStringSelectMenu()){
           const value=i.values[0]!;
           if(value.startsWith('page:')){s.epPage=Math.max(0,Number(value.slice(5))||0);this.persist();await this.paint();return await i.deleteReply().catch(()=>{})}
@@ -546,6 +577,17 @@ export class Streaming {
           if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
           const want=s.quality==='1080p'?'720p':'1080p';
           await this.playback(async()=>{await this.bridge.call('/api/seek',{position:Math.max(0,state.position||s.position),quality:want});s.quality=want;s.position=state.position||s.position});
+        }else if(op==='skipb'||op==='skipf'||op==='skipop'){
+          if(!['playing','paused'].includes(s.phase))throw new Error('Press Play before skipping.');
+          const state=await this.bridge.call<WorkerState>('/api/state');
+          if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
+          s.position=state.position;s.duration=state.duration;
+          if(!s.duration)throw new Error('The source has not reported a duration, so skipping is unavailable.');
+          const delta=op==='skipb'?-10:op==='skipf'?30:85;
+          const left=s.duration-s.position;
+          if(delta>0&&left<=delta+3)throw new Error(`Only ${clock(Math.max(0,left))} left in this episode. Press Next for the next one.`);
+          const n=Math.max(0,s.position+delta);
+          await this.playback(async()=>{await this.bridge.call('/api/seek',{position:n});s.position=n});
         }else if(op==='seekInput'){
           if(!['playing','paused'].includes(s.phase))throw new Error('Press Play before changing the time.');
           const state=await this.bridge.call<WorkerState>('/api/state');
