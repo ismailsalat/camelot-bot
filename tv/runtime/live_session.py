@@ -35,33 +35,49 @@ class LiveSession:
     def __init__(self, bot):
         self.bot = bot
         self.player = self.sender = self.connection = self.reader = None
+        self.cleanup = None
+        self.poisoned = False
     async def stop(self):
-        # These are local references, never shared guild slots that a new player owns.
+        if not self.cleanup:self.cleanup=asyncio.create_task(self._stop())
+        task=self.cleanup
+        try:await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Finish owned cleanup even if the caller is shutting down.
+            await task
+            raise
+        finally:
+            if task.done() and self.cleanup is task:self.cleanup=None
+
+    async def _stop(self):
         player, sender, conn, reader = self.player, self.sender, self.connection, self.reader
         self.player = self.sender = self.connection = self.reader = None
-        if player:
-            player.stop()
-            await asyncio.to_thread(player.join, 8)
-            if player.is_alive():
-                proc = player._proc
-                if proc and proc.poll() is None:
-                    proc.kill()
-                await asyncio.to_thread(player.join, 3)
-            if player.is_alive():
-                raise RuntimeError('Old video player did not stop; restart worker before playing again')
-        if sender:
-            sender.stop()
-            await asyncio.to_thread(sender.join, 2)
-        if reader:
-            reader.close()
-        if conn:
+        try:
+            if player:
+                player.stop()
+                await asyncio.to_thread(player.join, 8)
+                if player.is_alive():
+                    proc = player._proc
+                    if proc and proc.poll() is None:proc.kill()
+                    await asyncio.to_thread(player.join, 3)
+                if player.is_alive():raise RuntimeError('Old video player did not stop; restart worker before playing again')
+        except BaseException:
+            self.poisoned = True
+            raise
+        finally:
             try:
-                await asyncio.wait_for(conn.disconnect(), 5)
-            except Exception:
-                pass
+                if sender:
+                    sender.stop()
+                    await asyncio.to_thread(sender.join, 2)
+                    if hasattr(sender,'is_alive') and sender.is_alive():self.poisoned=True
+                if reader:reader.close()
+            finally:
+                if conn:
+                    try:await asyncio.wait_for(conn.disconnect(), 5)
+                    except Exception:self.poisoned=True
     async def start(self, guild, channel, url):
         await self.stop()
-        vc = await ensure_voice(channel, guild.voice_client)
+        if self.poisoned:raise RuntimeError('Restart streaming account before playing again')
+        vc = await asyncio.wait_for(ensure_voice(channel, guild.voice_client),25)
         conn = GoLiveConnection(self.bot, guild.id, channel.id, vc)
         self.connection = conn
         try:

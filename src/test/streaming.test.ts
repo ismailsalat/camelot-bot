@@ -108,3 +108,87 @@ test('Next changes the episode, asks worker for the new episode, and keeps its o
  assert.equal(calls.find(c=>c[0]==='/api/play')[1].unit,'e2');
  assert.equal(calls.filter(c=>c[0].startsWith('/api/search')).length,0);
 });
+
+import {renderHelpHome,renderHelpCategory} from '../core/help.js';
+import {streamingHealth} from '../core/status.js';
+import {settingsCard} from '../streaming/ui.js';
+import {clearToken,tokenSource} from '../streaming/store.js';
+
+test('Help includes /help and Streaming setup even while Streaming is off',()=>{
+ const m=member('alice');const home=JSON.stringify(renderHelpHome(m).toJSON());
+ assert(home.includes('/help'));assert(home.includes('/stream'));assert(home.includes('Streaming · Off'));
+ const detail=JSON.stringify(renderHelpCategory(m,'streaming').toJSON());
+ assert(detail.includes('server owner'));assert(detail.includes('My turn'));assert(detail.includes('Stop'));
+ assert(!JSON.stringify(renderHelpCategory(m,'purge').toJSON()).includes('Runs on its own'));
+});
+test('Streaming status distinguishes disabled, missing, valid and unreadable account',()=>{
+ const guild=member('alice').guild;
+ assert.equal(streamingHealth(guild)[0]!.state,'off');
+ setByPath('guild','modules.streaming',true);assert.equal(streamingHealth(guild)[0]!.state,'warn');
+ saveToken('guild','a'.repeat(60));assert.equal(streamingHealth(guild)[0]!.state,'ok');
+ const previous=process.env.STREAMING_SECRET_KEY;process.env.STREAMING_SECRET_KEY='cd'.repeat(32);
+ try{assert.equal(streamingHealth(guild)[0]!.state,'warn')}finally{process.env.STREAMING_SECRET_KEY=previous}
+});
+test('settings show saved account without displaying its token',()=>{
+ const token='x'.repeat(60);saveToken('guild',token);
+ const card=JSON.stringify(settingsCard(member('owner')).toJSON());
+ assert(card.includes('Saved in Settings'));assert(card.includes('Check account'));assert(!card.includes(token));assert(card.includes('empty token form'));
+});
+test('removing a saved account reports the environment fallback accurately',()=>{
+ const oldToken=process.env.CAMELOT_STREAMER_TOKEN,oldGuild=process.env.CAMELOT_GUILD_ID;
+ process.env.CAMELOT_STREAMER_TOKEN='z'.repeat(60);process.env.CAMELOT_GUILD_ID='guild';
+ try{saveToken('guild','x'.repeat(60));clearToken('guild');assert.equal(tokenSource('guild'),'Railway variable');assert.equal(getToken('guild'),'z'.repeat(60))}
+ finally{if(oldToken===undefined)delete process.env.CAMELOT_STREAMER_TOKEN;else process.env.CAMELOT_STREAMER_TOKEN=oldToken;if(oldGuild===undefined)delete process.env.CAMELOT_GUILD_ID;else process.env.CAMELOT_GUILD_ID=oldGuild}
+});
+test('malformed persisted session cannot crash startup',()=>{
+ saveSession(fixture());getDb().prepare('UPDATE streaming_state SET value=? WHERE key=?').run('{"episodes":"bad"}','session');
+ assert.equal(restoreSession(),null);
+});
+test('loading disables playback changes but keeps Stop available',()=>{
+ const s=fixture();s.phase='loading';const rows=panel(s,0).toJSON().components.filter((x:any)=>x.type===1) as any[];
+ assert(rows[0].components[1].disabled);assert(!rows[0].components[2].disabled);assert(rows[1].components.every((x:any)=>x.disabled));
+});
+test('gate idle waits for completion even after the operation rejects',async()=>{
+ const gate=new Gate();let finish!:()=>void;let idle=false;
+ const first=gate.run(async()=>{await new Promise<void>(r=>finish=r);throw Error('cancelled')});
+ const handled=assert.rejects(first,/cancelled/);const waiting=gate.idle().then(()=>{idle=true});
+ await Promise.resolve();assert(!idle);finish();await handled;await waiting;assert(idle);
+});
+function interaction(op:string,user='alice'){
+ const replies:any[]=[];
+ return {customId:`tv:abc:${op}`,isChatInputCommand:()=>false,isRepliable:()=>true,inCachedGuild:()=>true,member:member(user),isButton:()=>true,isModalSubmit:()=>false,isStringSelectMenu:()=>false,deferred:false,replied:false,replies,
+ deferReply:async function(){this.deferred=true},editReply:async(p:any)=>{replies.push(p)},reply:async(p:any)=>{replies.push(p)}} as any;
+}
+test('unauthorized click during loading never changes the active stream to error',async()=>{
+ const tv:any=new Streaming();tv.session=fixture();tv.session.phase='loading';setByPath('guild','modules.streaming',true);
+ let failed=false;tv.fail=async()=>{failed=true};const i=interaction('next','bob');await tv.handle(i);
+ assert(!failed);assert.equal(tv.session.phase,'loading');assert(i.replies[0].content.includes('Only the controller'));
+});
+test('temporary message fetch failure keeps the panel and is retried',async()=>{
+ const tv:any=new Streaming();tv.session=fixture();tv.session.message='old';let sent=0,edits=0,fail=true;
+ tv.channel=async()=>({messages:{fetch:async()=>{if(fail)throw Error('temporary');return {attachments:new Collection(),edit:async()=>{edits++}}}},send:async()=>{sent++;return{id:'new'}}});
+ await tv.paint();assert.equal(tv.session.message,'old');assert(tv.dirty);assert.equal(sent,0);
+ fail=false;await tv.paint();assert.equal(edits,1);assert(!tv.dirty);
+});
+test('a change requested during a panel update is painted afterward',async()=>{
+ const tv:any=new Streaming();tv.session=fixture();tv.session.message='old';let finish!:()=>void;let edits=0;
+ tv.channel=async()=>({messages:{fetch:async()=>({attachments:new Collection(),edit:async()=>{edits++;if(edits===1)await new Promise<void>(r=>finish=r)}})}});
+ const first=tv.paint();while(!finish)await new Promise(r=>setImmediate(r));
+ tv.session.note='New state';const second=tv.paint();finish();await Promise.all([first,second]);assert.equal(edits,2);
+});
+test('Stop cancels the running operation before releasing and blocks new claims meanwhile',async()=>{
+ const tv:any=new Streaming();tv.session=fixture();setByPath('guild','modules.streaming',true);tv.paint=async()=>{};
+ let finish!:()=>void;const order:string[]=[];
+ const running=tv.gate.run(async()=>{await new Promise<void>(r=>finish=r);order.push('operation ended')});
+ tv.bridge={cancelRequests:()=>{order.push('cancel');finish()},close:async()=>{order.push('close')},disconnect:async()=>{assert(!tv.gate.locked||tv.stopping);order.push('disconnect')}};
+ const i=interaction('stop');await tv.handle(i);await running;
+ assert.equal(tv.session.owner,null);assert(order.indexOf('operation ended')<order.indexOf('disconnect'));assert(!tv.stopping);
+ assert(i.replies.at(-1).content.includes('stopped'));
+});
+test('seek uses fresh worker position and reports success only after acknowledgment',async()=>{
+ const tv:any=new Streaming();tv.session=fixture();setByPath('guild','modules.streaming',true);tv.paint=async()=>{};
+ let finish!:()=>void;let target=0;
+ tv.bridge={call:async(path:string,body:any)=>{if(path==='/api/state')return{status:'streaming',position:60,duration:120};target=body.position;await new Promise<void>(r=>finish=r)}};
+ const i=interaction('forward');const pending=tv.handle(i);while(!finish)await new Promise(r=>setImmediate(r));
+ assert.equal(i.replies.length,0);assert.equal(target,90);finish();await pending;assert.equal(tv.session.position,90);assert(i.replies[0].content.includes('1:30'));
+});

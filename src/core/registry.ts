@@ -116,7 +116,7 @@ export const MODULES: ModuleSpec[] = [
 ];
 
 export const COMMANDS: CommandSpec[] = [
-  {name:'stream',description:'Open TV controls in your voice channel.',module:'streaming',tier:'member',settingsGroup:'streaming',slashOnly:true},
+  {name:'stream',description:'Open Streaming controls in your voice channel.',module:'streaming',tier:'member',settingsGroup:'streaming',slashOnly:true},
   {
     name: 'help',
     description: 'See what Camelot does.',

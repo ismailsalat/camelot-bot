@@ -94,8 +94,11 @@ davey_compat.patch_reinit(discord.voice_state)
 video_compat.patch_video(discord.gateway)
 
 class CamelotOnline(commands.Bot):
-    def __init__(self):
+    def __init__(self, reader=None):
         super().__init__(command_prefix='!',help_command=None,self_bot=False)
+        self.input=reader
+        self._tv_closing=False
+        self.control_task=None
         self.live=LiveSession(self)
         self.play_lock=asyncio.Lock()
         self.job=None
@@ -126,11 +129,12 @@ class CamelotOnline(commands.Bot):
 
     async def read_controls(self):
         while True:
-            line=await asyncio.to_thread(sys.stdin.readline)
+            line=(await self.input.readline()).decode("utf-8")
             if not line:
                 await self.close();return
             if len(line)>12000:
                 log.warning('Oversized control request rejected');continue
+            job={}
             try:
                 job=json.loads(line)
                 op=job.get('op')
@@ -141,11 +145,17 @@ class CamelotOnline(commands.Bot):
                 elif op=='resume':await self.resume()
                 elif op=='seek':await self.seek(job)
                 elif op=='status':self.status()
-                elif op=='quit':await self.close();return
+                elif op=='quit':
+                    await self.close()
+                    emit('ack',requestId=job.get('requestId'),ok=True)
+                    return
+                else:raise ValueError('Unknown playback control')
+                emit('ack',requestId=job.get('requestId'),ok=True)
             except Exception as exc:
                 log.exception('Control operation failed: %s',type(exc).__name__)
                 self.mode='failed'
                 emit('failed',message='Control operation failed; try Play again')
+                emit('ack',requestId=job.get('requestId'),ok=False,message='Could not change playback. Press Play to reconnect.')
 
     def position(self):
         p=self.live.player
@@ -192,7 +202,7 @@ class CamelotOnline(commands.Bot):
 
     async def pause(self):
         async with self.play_lock:
-            if not self.job:return
+            if not self.job:raise ValueError('No active episode')
             self.offset=self.position()
             await self._play({'url':STANDBY,'channel':self.job['channel'],'title':'Camelot TV · Paused'})
             self.mode='paused'
@@ -200,7 +210,8 @@ class CamelotOnline(commands.Bot):
 
     async def resume(self):
         async with self.play_lock:
-            if self.job:await self._play({**self.job,'position':self.offset})
+            if not self.job:raise ValueError('No active episode')
+            await self._play({**self.job,'position':self.offset})
 
     async def seek(self,job):
         async with self.play_lock:
@@ -229,34 +240,49 @@ class CamelotOnline(commands.Bot):
     async def monitor(self):
         while True:
             await asyncio.sleep(1)
-            if self.play_lock.locked():continue
-            p=self.live.player
-            if self.mode not in ('starting','streaming'):continue
-            if p and p._frames_emitted>0 and not self.reported:
-                self.mode='streaming';self.reported=True
-                emit('playing',position=self.position())
-            if p and p.is_alive():
-                if self.reported and self.live.sender and not self.live.sender.is_alive():
-                    await self.live.stop();self.mode='failed';emit('failed',message='Audio connection interrupted');continue
-                self.status()
-                if not self.reported and time.monotonic()-self.started>35:
-                    await self.live.stop();self.mode='failed';emit('failed',message='Video did not start')
-                continue
-            pos=self.position()
-            duration=float((self.job or {}).get('duration') or 0)
-            self.offset=pos
-            self.mode='ended' if self.reported and (not duration or pos>=duration-5) else 'failed'
-            await self.live.stop()
-            emit(self.mode,position=pos)
+            async with self.play_lock:
+                await self.monitor_once()
+
+    async def monitor_once(self):
+        # Caller holds play_lock throughout cleanup. A new episode cannot overlap it.
+        p=self.live.player
+        if self.mode not in ('starting','streaming'):return
+        if p and p._frames_emitted>0 and not self.reported:
+            self.mode='streaming';self.reported=True
+            emit('playing',position=self.position())
+        if p and p.is_alive():
+            if self.reported and self.live.sender and not self.live.sender.is_alive():
+                await self.live.stop();self.mode='failed';emit('failed',message='Audio connection interrupted');return
+            self.status()
+            if not self.reported and time.monotonic()-self.started>35:
+                await self.live.stop();self.mode='failed';emit('failed',message='Video did not start')
+            return
+        pos=self.position()
+        duration=float((self.job or {}).get('duration') or 0)
+        proc=getattr(p,'_proc',None)
+        clean_exit=proc is not None and proc.poll()==0
+        self.offset=pos
+        self.mode='ended' if self.reported and clean_exit and (not duration or pos>=duration-5) else 'failed'
+        await self.live.stop()
+        emit(self.mode,position=pos)
 
     async def close(self):
-        if self.monitor_task:self.monitor_task.cancel()
-        await self.live.stop()
-        await super().close()
+        if self._tv_closing:return
+        self._tv_closing=True
+        current=asyncio.current_task()
+        tasks=[t for t in (self.monitor_task,self.control_task) if t and t is not current]
+        for task in tasks:task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+        try:
+            async with self.play_lock:await self.live.stop()
+        finally:await super().close()
 
 async def main():
     global TOKEN,GUILD_ID
-    first=sys.stdin.readline()
+    reader=asyncio.StreamReader(limit=16384)
+    protocol=asyncio.StreamReaderProtocol(reader)
+    await asyncio.get_running_loop().connect_read_pipe(lambda:protocol,sys.stdin.buffer)
+    first=await reader.readline()
     if not first or len(first)>1000:raise SystemExit('Startup handshake missing')
     try:data=json.loads(first)
     except json.JSONDecodeError:raise SystemExit('Invalid initial handshake')
@@ -266,7 +292,7 @@ async def main():
         raise SystemExit('Missing/invalid account credentials or guild ID')
     GUILD_ID=int(gid)
     emit('connecting')
-    bot=CamelotOnline()
+    bot=CamelotOnline(reader)
     try:await bot.start(TOKEN)
     finally:await bot.close()
 

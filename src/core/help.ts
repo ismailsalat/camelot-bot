@@ -33,7 +33,7 @@ export function renderHelpHome(member: GuildMember, client?: Client) {
   const settings = getSettings(member.guild.id);
   const tier = tierOf(member);
 
-  const modules = MODULES.filter((module) => module.key !== 'core' && isModuleEnabled(settings, module.key));
+  const modules = MODULES.filter((module) => module.key !== 'core' && (module.key === 'streaming' || isModuleEnabled(settings, module.key)));
 
   const body = container()
     .addTextDisplayComponents(heading(`${emojiFor(settings, 'crown', client)}  CAMELOT`, 'Everything you need.'))
@@ -41,19 +41,20 @@ export function renderHelpHome(member: GuildMember, client?: Client) {
 
   for (const module of modules) {
     const commands = commandsFor(module.key).filter((command) => tierAllows(tier, command.tier));
-    const line = commands.length > 0 ? commands.map((command) => commandLabel(command)).join('  ') : '_Automatic_';
-    body.addTextDisplayComponents(text(`**${module.name}**\n${module.blurb}\n${line}`));
+    const line = commands.length > 0 ? commands.map((command) => commandLabel(command)).join('  ') : commandsFor(module.key).length ? '_Admin only_' : '_Automatic_';
+    const status = isModuleEnabled(settings, module.key) ? '' : ' · Off';
+    body.addTextDisplayComponents(text(`**${module.name}${status}**\n${module.blurb}\n${line}`));
   }
 
   const core = commandsFor('core').filter((command) => tierAllows(tier, command.tier));
   if (core.length > 0) {
     body.addTextDisplayComponents(
-      text(`**Settings**\nChange how Camelot works.\n${core.map((command) => commandLabel(command)).join('  ')}`),
+      text(`**Help & settings**\n${core.map((command) => `${commandLabel(command)} · ${command.description}`).join('\n')}`),
     );
   }
 
   const options = modules
-    .filter((module) => commandsFor(module.key).some((command) => tierAllows(tier, command.tier)))
+    .filter((module) => !commandsFor(module.key).length || commandsFor(module.key).some((command) => tierAllows(tier, command.tier)))
     .map((module) =>
       new StringSelectMenuOptionBuilder()
         .setLabel(module.name)
@@ -61,7 +62,7 @@ export function renderHelpHome(member: GuildMember, client?: Client) {
         .setDescription(module.blurb.slice(0, 100)),
     );
 
-  if (textCommandsEnabled(member.guild.id)) {
+  if (textCommandsEnabled(member.guild.id) && isModuleEnabled(settings, 'activity')) {
     const prefix = prefixFor(member.guild.id);
     body
       .addSeparatorComponents(divider())
@@ -90,6 +91,7 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
   const settings = getSettings(member.guild.id);
   const tier = tierOf(member);
   const module = moduleByKey(key);
+  if (!module) return renderHelpHome(member);
   const commands = commandsFor(key).filter((command) => tierAllows(tier, command.tier));
 
   const body = container()
@@ -97,7 +99,7 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
     .addSeparatorComponents(divider());
 
   if (commands.length === 0) {
-    body.addTextDisplayComponents(text('Runs on its own — no commands needed.'));
+    body.addTextDisplayComponents(text(commandsFor(key).length ? 'These controls are for admins.' : 'Runs on its own. No commands needed.'));
   } else {
     const prefix = prefixFor(member.guild.id);
     const textOn = textCommandsEnabled(member.guild.id);
@@ -118,6 +120,14 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
       }
       body.addTextDisplayComponents(text(lines.join('\n')));
     }
+  }
+
+  if (key === 'streaming') {
+    body.addTextDisplayComponents(text(isModuleEnabled(settings, key)
+      ? 'Join a voice channel → `/stream` → **Find anime** → **Play**. The controls appear in that VC’s chat.'
+      : 'Streaming is off. The server owner can turn it on in `/settings` → **Modules**, then an admin can save the account in **Streaming**.'));
+    body.addTextDisplayComponents(text('**Playback**\nPrevious ep · Next ep · Stop · Play/Pause\nBack 30 sec · Forward 30 sec · Custom time\nChoose a source from the dropdown if playback fails.'));
+    body.addTextDisplayComponents(text('**Taking turns**\nOne person controls the stream. **My turn** joins the queue. **Stop** ends the session and frees the next turn.'));
   }
 
   const group = commands.find((command) => command.settingsGroup)?.settingsGroup ?? module.settingsGroups[0];

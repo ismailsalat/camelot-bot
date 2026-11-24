@@ -4,11 +4,13 @@ This package adds Streaming to the existing Camelot bot. Use the files **inside 
 
 ## Railway
 
-1. Replace your repository files with this package, including the updated Dockerfile and the whole `tv` directory. Keep your existing Railway Discord bot variables.
+1. Apply the package using [UPDATE.md](UPDATE.md), including the updated Dockerfile and the whole `tv` directory. Keep your existing Railway Discord bot variables.
 2. Keep one replica. Attach a persistent Volume at `/data`, with `DATABASE_PATH=/data/camelot.sqlite`. The bot database, streaming session and encryption key must survive redeploys. Back up `/data/camelot.sqlite` and `/data/streaming.key` together.
 3. Use the included Dockerfile builder and `node dist/index.js` start command. Do not set a public HTTP health check: this is a Discord worker, and its TV API binds only to loopback. No public TV domain is needed.
 4. After deploying, the owner opens `/settings` → Modules → **Turn on Streaming**. Then an owner/admin opens `/settings` → Streaming → **Save account** and enters the streaming account token privately. It is encrypted in SQLite and never filled back into the form or printed in the panel. Discord token input itself is an ordinary private modal, not a password-masked field.
 5. Alternatively set `CAMELOT_STREAMER_TOKEN` and `CAMELOT_GUILD_ID` in Railway Variables. Saved settings take precedence. Removing the saved token does not delete Railway Variables. An optional `STREAMING_SECRET_KEY` must be exactly 64 hex characters and stay unchanged. Otherwise the application creates `/data/streaming.key`.
+Use **Check account** in Settings → Streaming to verify login and server membership before playing. This check does not start a stream. `/help` lists Streaming even when it is off, and Bot Status checks whether its saved account can be opened.
+
 6. The streaming account must already belong to the server and have access to the voice channel. Camelot needs View Channel, Send Messages, Read Message History and Attach Files in VC chat. The streaming account needs Connect, Speak and Video permissions.
 7. Join a VC and run `/stream`. Select **Find anime**, pick the title, then **Play**. New commands publish automatically at startup.
 
@@ -20,7 +22,7 @@ The panel lives in VC chat and follows Camelot's existing component style. It in
 
 - First row: Previous ep · Next ep · Stop · Play/Pause.
 - Second row: Back 30 seconds · Forward 30 seconds · Custom · Episode.
-- Third row: Find anime · Sub/Dub · My turn · Release.
+- Third row: Find anime · Sub/Dub · My turn.
 - Source dropdown: Auto or a matching source. The selected source is attempted first; verified alternatives are tried if it fails.
 
 Custom accepts `12:30`, `750`, `+90` or `-30`. Seek buttons clamp to the episode's bounds; custom input outside the bounds is rejected. Sources without a reported duration display `--:--` and cannot be seeked. Position comes from emitted video frames, so it is approximate to a second; the panel refreshes every five seconds.
@@ -33,7 +35,7 @@ The panel reposts after chat activity, no more than once every five seconds. A r
 
 ## One active controller
 
-One controller and one VC are reserved across this bot instance. Other users cannot move the stream or change playback. Admins in the active VC can intervene. **My turn** joins a first-in-first-out queue; pressing it again leaves the queue. Waiters must remain in the VC they chose. Stop, Release, episode completion without auto-next, idle timeout and empty VC timeout release the session. The old worker must disconnect before the next controller receives it.
+One controller and one VC are reserved across this bot instance. Other users cannot move the stream or change playback. Admins in the active VC can intervene. **My turn** joins a first-in-first-out queue; pressing it again leaves the queue. Waiters must remain in the VC they chose. Stop, episode completion without auto-next, idle timeout and empty VC timeout release the session. The old worker must disconnect before the next controller receives it.
 
 Default idle timeout is 120 seconds; default empty-VC timeout is 60 seconds. Both are editable from Settings → Streaming. Paused sessions count as idle. A controller who leaves gets the idle grace period, after which the session is released. The streaming account itself is excluded from viewer counts. Auto-next is on by default and can be changed in Settings.
 
@@ -59,11 +61,21 @@ No Discord account or live Railway deployment was used for validation. Docker it
 
 ## Validation
 
-- `npm test`: 286 bot tests, including new session, queue, permissions, token, time input and panel recovery cases.
+- `npm test`: 298 bot tests, including new session, queue, permissions, token, time input and panel recovery cases.
 - `npm run typecheck` and `npm run build`: passed.
-- `cd tv && npm test`: 52 TV tests.
-- `python3 -m unittest discover -s tests -p 'test_*.py'`: 6 Python tests.
+- `cd tv && npm test`: 56 TV tests.
+- `python3 -m unittest discover -s tests -p 'test_*.py'`: 8 Python utility/lifecycle tests.
 - `node tests/server-smoke.mjs`: loopback API authentication, state response, secret exclusion and all 11 registrations.
+- `.cloud-venv/bin/python tests/worker_regression.py`: 6 worker tests, including EOF classification, acknowledged controls and episode-cleanup locking.
+- `node tests/control_smoke.mjs`: real local HTTP/worker command path, with a test worker replacing Discord.
 - `.cloud-venv/bin/python tests/player_smoke.py`: two real FFmpeg + PCM FIFO start/stop cycles, with only the Discord packet transport replaced by a test sink.
 
 After deployment, check Play → Next → Previous → Pause → Play → seek, then Stop and a second user's queued turn. Confirm the saved account still shows Saved after a redeploy.
+
+## v12 fixes
+
+Help, Settings and Bot Status consistently include Streaming. Blank token forms do not clear the saved account. Settings distinguish a saved account from Railway variables, and include a connection check.
+
+Next/Previous clear the old episode timing. Seek uses the current worker position and checks the duration. Controls wait for worker acknowledgments. Stop cancels pending work before freeing the reservation. Stream-end cleanup holds the same lock as episode replacement. A failed FFmpeg exit cannot be mistaken for a completed episode.
+
+The panel retries transient update failures without deleting its working copy. Updates arriving during a Discord edit are applied afterward. Loading disables overlapping playback changes, and unauthorized clicks cannot change the active stream’s state. Public failures use short wording; source diagnostics stay in logs.

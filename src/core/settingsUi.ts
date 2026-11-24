@@ -46,7 +46,7 @@ const GROUP_BLURBS: Record<Group, string> = {
   clips: 'Media rules and the weekly winner',
   permissions: 'Who can change what',
   emojis: 'Swap in your server emojis',
-  status: 'Check everything is working',
+  status: 'Check setup and permissions',
 };
 
 export function renderHome(member: GuildMember) {
@@ -66,6 +66,7 @@ export function renderHome(member: GuildMember) {
 
   const enabled = MODULES.filter((module) => isModuleEnabled(settings, module.key)).map((module) => module.name);
   body.addTextDisplayComponents(text(`On right now: ${enabled.join(' · ')}`));
+  if(!settings.modules.streaming)body.addTextDisplayComponents(text('Streaming is off. Enable it in Modules, then set up the account in Streaming.'));
 
   if (tier === 'admin') {
     body.addTextDisplayComponents(text('_Some settings are owner only._'));
@@ -125,7 +126,7 @@ function renderModules(member: GuildMember) {
     .addTextDisplayComponents(
       text(
         `**Text commands** — ${settings.core.textCommands ? 'On' : 'Off'}\n` +
-          `Short versions of the slash commands: \`${prefix}allies\`, \`${prefix}purge @someone\`.\n` +
+          `Text shortcuts: \`${prefix}allies\`, \`${prefix}purge @someone\`. Streaming uses \`/stream\`.\n` +
           `Prefix: \`${prefix}\`${own ? '' : ' _(from the host settings)_'}`,
       ),
     );

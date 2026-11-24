@@ -3,6 +3,7 @@ import { getSettings, highlightsChannelId } from '../db/settings.js';
 import { isModuleEnabled, MODULES, moduleBlockedReason } from './registry.js';
 import { FULL_COVERAGE_SECONDS, recentDays, store } from '../activity/store.js';
 import { canUseEmoji, parseEmoji } from '../util/emoji.js';
+import { getToken, hasToken } from '../streaming/store.js';
 import { EMOJI_SLOTS } from '../db/settings.js';
 
 /**
@@ -163,9 +164,18 @@ export function purgeHealth(guild: Guild): Check[] {
   ];
 }
 
+export function streamingHealth(guild: Guild): Check[] {
+  const label = 'Streaming';
+  if (!isModuleEnabled(getSettings(guild.id), 'streaming')) return [{label, state:'off', detail:'Turn on in Settings → Modules.'}];
+  if (!hasToken(guild.id)) return [{label, state:'warn', detail:'Save the streaming account in Settings → Streaming.'}];
+  try { getToken(guild.id); }
+  catch { return [{label, state:'warn', detail:'Saved account cannot be opened. Restore the key or save the account again.'}]; }
+  return [{label, state:'ok', detail:'Account configured. Join a VC and use /stream to connect.'}];
+}
+
 export function overallStatus(guild: Guild): { checks: Check[]; enabledModules: number } {
   const settings = getSettings(guild.id);
-  const checks = [...clipsHealth(guild), ...activityHealth(guild), ...purgeHealth(guild)];
+  const checks = [...clipsHealth(guild), ...activityHealth(guild), ...purgeHealth(guild), ...streamingHealth(guild)];
   checks.push({ label: 'Database', state: 'ok', detail: 'Connected' });
   const enabledModules = MODULES.filter((module) => isModuleEnabled(settings, module.key)).length;
   return { checks, enabledModules };

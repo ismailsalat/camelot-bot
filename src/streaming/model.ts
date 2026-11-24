@@ -25,9 +25,11 @@ export function clock(n:number):string {
 }
 export class Gate {
   private busy=false;
+  private waiters:Array<()=>void>=[];
+  async idle(){if(this.busy)await new Promise<void>(resolve=>this.waiters.push(resolve))}
   async run<T>(fn:()=>Promise<T>):Promise<T>{
     if(this.busy)throw new Error('One moment, the last change is still finishing.');
-    this.busy=true;try{return await fn()}finally{this.busy=false}
+    this.busy=true;try{return await fn()}finally{this.busy=false;for(const resolve of this.waiters.splice(0))resolve()}
   }
   get locked(){return this.busy}
 }

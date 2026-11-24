@@ -9,8 +9,15 @@ export class Bridge {
   private child:ChildProcess|null=null;
   private key=randomBytes(32).toString('hex');
   private starting:Promise<void>|null=null;
+  private closing:Promise<void>|null=null;
+  private requests=new AbortController();
   private port=Number(process.env.STREAMING_PORT||'3334');
+  cancelRequests(){this.requests.abort(new Error('Playback change cancelled.'));this.requests=new AbortController()}
+  private killGroup(child:ChildProcess){
+    try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else if(child.exitCode===null)child.kill('SIGKILL')}catch{}
+  }
   async start(){
+    if(this.closing)throw new Error('Streaming is stopping. Try again in a moment.');
     if(this.starting)return this.starting;
     if(this.child)return;
     this.starting=this.launch();try{await this.starting}finally{this.starting=null}
@@ -21,15 +28,17 @@ export class Bridge {
     const child=spawn(process.execPath,[resolve('tv/server.mjs')],{env,detached:process.platform!=='win32',stdio:['ignore','ignore','ignore']});
     this.child=child;
     child.on('error',()=>{if(this.child===child)this.child=null;log.warn('TV service could not start. Check the Streaming setup.');});
-    child.on('exit',()=>{if(this.child===child)this.child=null});
-    for(let i=0;i<60;i++){
-      if(!this.child)throw new Error('TV service stopped. Check its installation.');
+    child.on('exit',()=>{if(this.child===child)this.child=null;this.killGroup(child)});
+    const deadline=Date.now()+20000;
+    while(Date.now()<deadline){
+      if(this.child!==child||this.closing)throw new Error('TV service stopped. Check its installation.');
       try{await this.call('/api/state');return}catch{await sleep(250)}
     }
     await this.close();throw new Error('TV service did not become ready.');
   }
   async call<T=any>(path:string,body?:unknown):Promise<T>{
-    const response=await fetch(`http://127.0.0.1:${this.port}${path}`,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${this.key}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(path==='/api/play'?240000:60000)});
+    const timeout=path==='/api/state'?3000:path==='/api/play'?240000:90000;
+    const response=await fetch(`http://127.0.0.1:${this.port}${path}`,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${this.key}`,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.any([AbortSignal.timeout(timeout),this.requests.signal])});
     const result=await response.json() as any;
     if(!response.ok)throw new Error(String(result.error||'TV request failed').replace(/https?:\/\/\S+/g,'[source]').slice(0,400));
     return result as T;
@@ -37,34 +46,29 @@ export class Bridge {
   async connect(guild:string,token:string){
     await this.start();let state=await this.call<WorkerState>('/api/state');
     if(state.connected&&state.guild===guild)return;
-    if(state.connected){await this.call('/api/disconnect',{});await sleep(1000)}
+    if(state.status!=='offline'){await this.close();await this.start()}
     await this.call('/api/connect',{guild,token});
-    for(let i=0;i<60;i++){
+    const deadline=Date.now()+35000;
+    while(Date.now()<deadline){
       await sleep(500);state=await this.call<WorkerState>('/api/state');
-      if(state.connected)return;
-      if(state.status==='offline')throw new Error('Streaming account could not connect. Check the saved token and server membership.');
+      if(state.connected&&state.guild===guild)return;
+      if(['offline','failed'].includes(state.status))throw new Error('Streaming account could not connect. Check the saved token and server membership.');
     }
     throw new Error('Streaming account connection timed out.');
   }
-  async disconnect(){
-    if(!this.child)return;
-    try{
-      await this.call('/api/stop',{});await this.call('/api/disconnect',{});
-      for(let i=0;i<60;i++){
-        const state=await this.call<WorkerState>('/api/state');
-        if(state.status==='offline')return;
-        await sleep(250);
-      }
-    }catch{}
-    // Never hand off while the old process still owns a voice connection.
-    await this.close();
-  }
+  async disconnect(){await this.close()}
   async close(){
+    if(this.closing)return this.closing;
+    this.cancelRequests();
     const child=this.child;if(!child)return;
-    try{await this.call('/api/disconnect',{})}catch{}
-    child.kill('SIGTERM');
-    await Promise.race([new Promise<void>(r=>child.once('exit',()=>r())),sleep(5000)]);
-    if(child.exitCode===null){try{if(process.platform!=='win32'&&child.pid)process.kill(-child.pid,'SIGKILL');else child.kill('SIGKILL')}catch{}}
-    if(this.child===child)this.child=null;
+    this.closing=(async()=>{
+      const exited=new Promise<void>(r=>child.once('exit',()=>r()));
+      child.kill('SIGTERM');
+      if(child.exitCode===null)await Promise.race([exited,sleep(12000)]);
+      // The server may have exited while a Python/FFmpeg descendant is still alive.
+      this.killGroup(child);
+      if(this.child===child)this.child=null;
+    })();
+    try{await this.closing}finally{this.closing=null}
   }
 }

@@ -1,36 +1,20 @@
 # Camelot Streaming update
 
 Start with [STREAMING.md](STREAMING.md) for the new module and Railway deployment.
-The original bot documentation follows. Existing clips, activity and purge data are preserved.
+All four modules are described below. Existing clips, activity and purge data are preserved.
 
 # 👑 Camelot
 
-A quiet Discord bot for a small friends server. Four commands, three modules,
-no XP and nothing to grind.
+A simple Discord bot for a small friend server.
 
-- **Clips** — post a video, photo, GIF or media link and it gets 👍 👎 automatically. Text-only posts are removed with a notice that deletes itself.
-- **Activity** — who has actually been around, from counted messages and shared voice time. Counters only: no message text, no audio.
-- **The Purge** — review members one at a time, like swiping through profiles. Nobody is removed until you confirm.
+- **Streaming**: watch together with controls in VC chat, episode switching, seeking, source choices and one controller at a time.
+- **Clips**: media posts get reactions automatically, with a weekly winner.
+- **Activity**: counted messages and shared voice time. No message text or audio is stored.
+- **The Purge**: review members one at a time. Nobody is removed until you confirm.
 
-## Updating to a new version
+## Updating
 
-Delete `src` before extracting, every time:
-
-```
-rmdir /s /q src          # Windows
-rm -rf src               # macOS / Linux
-```
-
-Extracting a zip over a folder adds and overwrites files but never removes
-ones that have since been deleted. Leave the old `src` in place and files from
-a previous version sit beside the new ones — `npm run dev` still works, because
-it only loads what gets imported, but `npm run build` compiles everything it
-finds and fails on code that no longer belongs.
-
-Your `.env` and `data/` live outside `src`, so deleting it loses nothing.
-
-Run `npm run build` after any update. It is the fastest way to catch a stale
-file, and it is exactly what CI does.
+Use [UPDATE.md](UPDATE.md). The included `patch.mjs` installs the complete update and backs up replaced source files. It preserves `.env`, `data/`, and `.git`. Build successfully before pushing.
 
 ## Quick start
 
@@ -114,6 +98,7 @@ See **[DEPLOY.md](DEPLOY.md)** for the step-by-step version. The short form:
 |---|---|---|---|
 | `/help` | `!help` | everyone | What Camelot does, generated from the live command registry |
 | `/settings` | — | admins | One place to configure everything |
+| `/stream` | slash only | everyone | Open Streaming controls in your VC |
 | `/activity` | `/allies`, `!allies` | everyone | Your own activity; admins can look up anyone |
 | `/purge` | `!purge @someone` | admins | Review members one at a time |
 
@@ -335,7 +320,7 @@ own, and nothing is announced.
 
 ## Permissions
 
-**Members** see Help and their own activity. **Admins** — Manage Server, or any
+**Members** see Help, Streaming and their own activity. **Admins** — Manage Server, or any
 role you name — get the groups the owner delegates. **The owner** controls
 everything, including which groups admins may touch.
 
@@ -358,6 +343,7 @@ src/
     router.ts           every interaction
     commands.ts  ids.ts
   features/             clips: media rules, guard, voting, clip of the week
+  streaming/            TV panel, account settings and worker bridge
   activity/
     model.ts            the two models — pure and fully tested
     store.ts            daily aggregates and coverage

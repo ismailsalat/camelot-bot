@@ -1,7 +1,7 @@
 # Deploying Camelot
 
 Camelot is a single always-on process with a SQLite file next to it. It needs no
-web server, no port, and no external database.
+public web server or external database. Streaming runs a private local worker in the same service. See [STREAMING.md](STREAMING.md) for account setup.
 
 ---
 
@@ -67,7 +67,7 @@ Railway redeploys on its own when you push to `main`.
    mount path **`/data`**.
 
    Without a volume, Railway gives the container a fresh filesystem on every
-   deploy. Your server settings, scheduled sessions and clip history would be
+   deploy. Your server settings, saved streaming account, encryption key and clip history would be
    wiped each time you push. This is the one step people skip.
 
 5. Deploy. The logs should show:
@@ -83,7 +83,7 @@ Railway redeploys on its own when you push to `main`.
 **Camelot does this itself.** On boot it compares its command set with what it
 last published and calls Discord only if they differ, so a new command appears
 after a deploy with nothing for you to run. The log line to look for is
-`Published 5 command(s) globally`. An ordinary restart logs nothing, because
+`Published 6 command(s) globally`. An ordinary restart logs nothing, because
 nothing changed.
 
 If you would rather do it by hand, from your own machine pointing at the same
@@ -106,11 +106,9 @@ running on the commands already registered, then tries again next boot.
 
 ## Backing up
 
-The whole bot's state is one file. With the Railway CLI:
+Keep a consistent backup of the SQLite database and `/data/streaming.key` together. If `STREAMING_SECRET_KEY` is set instead, retain that secret securely. Stop the service or use SQLite's backup API when copying the database; copying an open WAL database alone can miss recent changes.
 
-```bash
-railway run cat /data/camelot.sqlite > camelot-backup.sqlite
-```
+Do not rotate the encryption key without re-saving the streaming account. Without the original key, the encrypted token cannot be recovered.
 
 ---
 

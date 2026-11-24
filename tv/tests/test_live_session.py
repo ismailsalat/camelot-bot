@@ -50,3 +50,35 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(s.stop(),tick());self.assertEqual(ticks,['alive'])
 
 if __name__=='__main__':unittest.main()
+
+class CleanupFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stuck_video_still_closes_audio_and_poisoned_session_cannot_restart(self):
+        order=[]
+        class Player:
+            _proc=None
+            def stop(self):pass
+            def join(self,timeout):pass
+            def is_alive(self):return True
+        class Reader:
+            def close(self):order.append('pipe')
+        class Connection:
+            async def disconnect(self):order.append('connection')
+        s=live.LiveSession(None);s.player=Player();s.reader=Reader();s.connection=Connection()
+        with self.assertRaises(RuntimeError):await s.stop()
+        self.assertEqual(order,['pipe','connection']);self.assertTrue(s.poisoned)
+        with self.assertRaisesRegex(RuntimeError,'Restart streaming'):await s.start(None,None,'test')
+
+    async def test_cancelled_stop_finishes_cleanup_before_returning(self):
+        import threading
+        started=threading.Event();finish=threading.Event();order=[]
+        class Player:
+            def stop(self):pass
+            def join(self,timeout):started.set();finish.wait(2);order.append('joined')
+            def is_alive(self):return False
+        class Reader:
+            def close(self):order.append('closed')
+        s=live.LiveSession(None);s.player=Player();s.reader=Reader()
+        task=asyncio.create_task(s.stop())
+        await asyncio.to_thread(started.wait,1);task.cancel();finish.set()
+        with self.assertRaises(asyncio.CancelledError):await task
+        self.assertEqual(order,['joined','closed']);self.assertIsNone(s.cleanup)

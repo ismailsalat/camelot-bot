@@ -1,3 +1,12 @@
+# Streaming v12
+
+- Streaming appears in Help, Settings, Modules and Bot Status.
+- Saved-account status and a Check account button make setup clearer.
+- Fixed episode cleanup races, premature success replies, stale seek positions and Stop cancellation.
+- Panel updates recover after temporary Discord failures.
+- Added regression tests and a standalone patch installer with backups.
+- See UPDATE.md for installation and STREAMING.md for setup and test limits.
+
 # What changed
 
 ## 1. Admins and the owner have the final say

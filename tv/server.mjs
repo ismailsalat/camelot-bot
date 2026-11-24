@@ -1,3 +1,4 @@
+import {WorkerCommands} from './src/commands.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {spawn,execFile} from 'node:child_process';
@@ -11,7 +12,7 @@ import {inspectSources,episodeMenu,matchingSources} from './src/availability.mjs
 import {prepareCaptions,discardCaptions,SUBTITLE_CHOICES} from './src/subtitles.mjs';
 import {apiAccess,originAllowed} from './src/access.mjs';
 
-const VERSION='0.11.0';
+const VERSION='0.12.0';
 const DIR=resolve(fileURLToPath(new URL('.',import.meta.url)));
 const INTERNAL=process.env.CAMELOT_INTERNAL==='1';
 const CLOUD=!INTERNAL&&Boolean(process.env.RAILWAY_ENVIRONMENT||process.env.CAMELOT_BIND_ALL);
@@ -43,6 +44,7 @@ function control(job){
   if(!worker.child||worker.child.killed||!worker.child.stdin.writable)throw new Error('Streamer is not connected');
   worker.child.stdin.write(JSON.stringify(job)+'\n');
 }
+const commands=new WorkerCommands(control);
 function workerStart(token,guild){
   if(worker.child) throw new Error('Streamer is already running');
   if(typeof token!=='string'||token.length<30||token.length>250||!/^[0-9]{15,22}$/.test(String(guild)))throw new Error('Missing or invalid streaming account token / server ID');
@@ -56,10 +58,11 @@ function workerStart(token,guild){
   worker.child=child;worker.token=token;worker.guild=String(guild);worker.ready=false;worker.status='connecting';worker.channels=[];worker.account=null;
   child.stdin.on('error',()=>{});
   child.stdin.write(JSON.stringify({token,guild:String(guild)})+'\n');
-  child.on('error',e=>{log('error','Python worker failed to start. Run setup or check Railway build logs.');if(worker.child===child){worker.child=null;worker.ready=false;worker.status='offline'}});
+  child.on('error',e=>{commands.close();log('error','Python worker failed to start. Run setup or check Railway build logs.');if(worker.child===child){worker.child=null;worker.ready=false;worker.status='offline'}});
   child.on('close',(code)=>{
     log('info',`Streamer stopped (exit code ${code??'unknown'})`);
     if(worker.child!==child)return;
+    commands.close();
     worker.child=null;worker.ready=false;worker.status='offline';worker.playing=null;worker.channels=[];
     const old=activeCaptions;activeCaptions=null;retireCaptions(old);
   });
@@ -77,18 +80,19 @@ function consumeWorkerLine(line,kind){
   if(line.startsWith('TV_BRIDGE_JSON:')){
     try{
       const e=JSON.parse(line.slice('TV_BRIDGE_JSON:'.length));
-      if(e.event==='ready'){worker.ready=true;worker.streamerId=e.streamerId;worker.channels=e.channels||[];worker.account=e.streamer||'';worker.status='connected';log('info',`Connected as ${worker.account} to ${e.server} (${worker.channels.length} channels)`)}
+      if(commands.accept(e))return;
+      if(e.event==='ready'){worker.ready=true;worker.streamerId=e.streamerId;worker.channels=e.channels||[];worker.account=e.streamer||'';if(['offline','connecting','failed'].includes(worker.status))worker.status='connected';log('info',`Connected as ${worker.account} to ${e.server} (${worker.channels.length} channels)`)}
       else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed')log('error','Playback interrupted; choose another source or retry');}
-      else if(e.event==='starting'){worker.status='starting';worker.playing=e.title;worker.voice=e.channel;log('info','Go Live connection starting')}
+      else if(e.event==='starting'){worker.status='starting';worker.position=e.position??0;worker.playing=e.title;worker.voice=e.channel;log('info','Go Live connection starting')}
       else if(e.event==='stream_requested'){worker.status='requested';log('info','Go Live session requested. Check the voice channel.')}
-      else if(e.event==='stopped'){worker.status='connected';worker.playing=null;log('info','Stopped playback')}
-      else if(e.event==='error'){worker.status='connected';log('error',e.message||'Streaming error')}
+      else if(e.event==='stopped'){worker.status='connected';worker.playing=null;worker.position=0;worker.duration=null;log('info','Stopped playback')}
+      else if(e.event==='error'){worker.status='failed';log('error',e.message||'Streaming error')}
       return;
     }catch{log('error','Malformed worker event');return}
   }
   // Playback state comes from structured events, never log matching.
   // Structured lifecycle events own end-of-stream status.
-  if(/go-live connection failed|timed out waiting for audio|ffmpeg.*HTTP error/.test(line)){worker.status='connected';log('error','Streamer encountered a video/Go Live error; see activity log')}
+  if(/go-live connection failed|timed out waiting for audio|ffmpeg.*HTTP error/.test(line)){log('error','Streamer encountered a video/Go Live error; see activity log')}
   if(/(token|credentials delivered|user agent|TLS fingerprint|session id)/i.test(line)&&!/(error|warning)/i.test(line))return;
   if(/(ERROR|WARNING|Connected to test server|go-live stream finished|video stats|GoLive connection ready|starting go-live)/i.test(line))log(kind,line);
 }
@@ -234,7 +238,7 @@ const server=http.createServer(async(req,res)=>{
        let queue=candidatePlan({provider,media,alt:true},original,found.candidates,lang);
        if(b.source&&b.source!=='auto'){if(!queue.some(q=>q.provider===b.source))throw new Error('Selected source does not match this title');queue.sort((a,z)=>Number(z.provider===b.source)-Number(a.provider===b.source));}
        if(!queue.length)throw new Error('Selected source does not match this title');
-       if(!checkOnly)control({op:'standby',channel});
+       if(!checkOnly)await commands.request({op:'standby',channel});
        log('info',`Testing ${queue.length} matching provider(s) for episode ${chosen.number}: ${queue.map(q=>q.provider).join(', ')}`);
        const result=await tryPlayableEpisode({
          queue,episode:chosen,language:lang,
@@ -247,8 +251,9 @@ const server=http.createServer(async(req,res)=>{
          onSuccess:async(source,entry)=>{
            if(checkOnly){await discardPrepared(source);return;}
            const duration=await probeDuration(source);
+           if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
            worker.duration=duration;worker.position=Number(b.position)||0;worker.status='starting';
-           control({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
+           await commands.request({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);
          }
@@ -295,17 +300,17 @@ const server=http.createServer(async(req,res)=>{
    if(['/api/pause','/api/resume','/api/seek','/api/standby'].includes(path)&&req.method==='POST'){
      const b=await body(req);
      if(path==='/api/seek'&&(!Number.isFinite(b.position)||!worker.duration||b.position<0||b.position>=worker.duration))throw new Error('Choose a time inside the episode');
-     control({op:path.split('/').pop(),position:b.position,channel:b.channel});
+     await commands.request({op:path.split('/').pop(),position:b.position,channel:b.channel});
      return json(res,202,{ok:true});
    }
    if(path==='/api/stop'&&req.method==='POST'){
      if(role==='bridge'){const b=await body(req);if(String(b.guild||'')!==String(worker.guild||process.env.CAMELOT_GUILD_ID||''))throw new Error('This TV worker is paired with a different server');}
      playGeneration++;const old=activeCaptions;activeCaptions=null;retireCaptions(old);
-     if(worker.child)control({op:'stop'});return json(res,202,{ok:true});
+     if(worker.child)await commands.request({op:'stop'});return json(res,202,{ok:true});
    }
    if(path==='/api/disconnect'&&req.method==='POST'){
      playGeneration++;
-     if(worker.child)control({op:'quit'});return json(res,202,{ok:true});
+     if(worker.child)await commands.request({op:'quit'});return json(res,202,{ok:true});
    }
    return json(res,404,{error:'Unknown endpoint'});
  }catch(e){return err(res,e, /provider|connect|failed|FFmpeg/i.test(e?.message||'')?502:400)}
@@ -328,4 +333,18 @@ server.listen(PORT,HOST,()=>{
    try{workerStart(process.env.CAMELOT_STREAMER_TOKEN,process.env.CAMELOT_GUILD_ID)}catch(e){log('error','Cloud worker cannot start; check configuration')}
  }
 });
-process.on('SIGTERM',()=>{try{control({op:'quit'})}catch{} server.close(async()=>{await Promise.allSettled([...captionFiles].map(discardPrepared));process.exit(0);});});
+let shuttingDown=false;
+async function shutdown(){
+ if(shuttingDown)return;shuttingDown=true;playGeneration++;
+ server.close();server.closeAllConnections();
+ const child=worker.child;
+ if(child){
+   const exited=new Promise(resolve=>child.once('close',resolve));
+   try{control({op:'quit'})}catch{}
+   const timer=setTimeout(()=>{child.kill('SIGKILL')},10000);
+   await exited;clearTimeout(timer);
+ }
+ commands.close();await Promise.allSettled([...captionFiles].map(discardPrepared));process.exit(0);
+}
+process.on('SIGTERM',()=>void shutdown());
+process.on('SIGINT',()=>void shutdown());

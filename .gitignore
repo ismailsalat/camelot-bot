@@ -13,3 +13,15 @@ data/
 .vscode/
 .idea/
 coverage/
+
+# Local TV runtime and credentials
+**/.cloud-venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+tv/upstream/
+tv/.cache/
+streaming.key
+.camelot-backup-*/
+**/_slopsoil_upstream/
+**/.verified-source-downloads/
