@@ -1,0 +1,36 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Camelot TV - Online</title><link rel="stylesheet" href="/ui.css"></head>
+<body>
+<header class="top"><div><strong>CAMELOT TV</strong><span>ONLINE PLAYBACK · v0.10.0 · DUB + SUBTITLES</span></div><small id="banner">Offline</small></header>
+<main>
+<section class="window" id="connect-panel">
+<div class="window-title">1. Connect</div>
+<div class="window-body">
+<p class="muted">For local testing, enter the test streaming account and server ID. On Railway, configure those in service variables instead.</p>
+<div id="remote-auth" class="hidden"><label>Railway admin key <input type="password" id="admin" autocomplete="off" placeholder="Railway admin key"></label><button id="unlock">Unlock</button></div>
+<div id="local-auth">
+<label>Test Discord server ID <input id="guild" inputmode="numeric" placeholder="Server ID" autocomplete="off"></label>
+<label>Experimental streamer token <input id="token" type="password" autocomplete="off" placeholder="Stored in memory only while open"></label>
+</div>
+<div class="actions"><button id="connect" class="primary">Connect Streamer</button><button id="disconnect">Disconnect</button></div>
+<div class="hint">Discord prohibits automating user accounts. Use a disposable test account. Never share tokens.</div>
+</div></section>
+<section class="window" id="anime-panel"><div class="window-title">2. Find Anime</div><div class="window-body">
+<div class="searchrow"><input id="query" placeholder="Search anime title..." autocomplete="off" aria-label="Anime title"><select id="provider"><option value="all">All sources</option><option value="catalog">Anime catalog only</option></select><button id="search" class="primary">Search</button></div>
+<div class="hint" id="search-message">Find an anime. Stream availability is tested after choosing an episode.</div>
+<div id="results" class="resultlist" role="list"></div>
+</div></section>
+<section class="window" id="episode-panel"><div class="window-title">3. Play Episode</div><div class="window-body">
+<div class="selected" id="selected">No anime selected.</div>
+<label>Episode <select id="episode"><option value="">Choose a title above first</option></select></label>
+<div class="inline"><label>Language <select id="language"><option value="sub">Sub</option><option value="dub">Dub</option><option value="raw">Other audio</option></select></label><label>Voice channel <select id="voice"><option value="">Connect first</option></select></label></div>
+<label>Subtitles <select id="subtitles"><option value="en">English</option><option value="off">Off</option><option value="ar">Arabic</option><option value="es">Spanish</option><option value="fr">French</option><option value="it">Italian</option><option value="de">German</option><option value="pt">Portuguese</option><option value="ru">Russian</option></select></label>
+<div class="hint" id="availability-message">Choose a title to check Sub/Dub across sources.</div>
+<div class="hint" id="caption-message">Selected captions are checked and rendered into the video for everyone watching. Choose Off if you do not want a separate caption track.</div>
+<div class="actions"><button id="refresh-sources">Refresh Sources</button><button id="prev">◀ Previous</button><button id="play" class="primary">▶ PLAY</button><button id="next">Next ▶</button><button id="stop">■ Stop</button><button id="check-episode" title="Decode this anime episode without connecting Discord">Check Episode</button><button id="test-online" title="Public online test video (NOT anime)">Test Online Video</button></div>
+<div class="hint" id="play-message">Choose any episode above, then Play. Providers must return actual video frames. Test Online Video isolates the internet connection; it is NOT an anime episode.</div>
+</div></section>
+<section class="window logs"><div class="window-title">Activity Log <button id="refresh">Refresh</button></div><div class="window-body"><div id="log-list" aria-live="polite"></div></div></section>
+</main>
+<footer>Camelot TV v0.10.0 · No local episode uploads · No Docker for local testing · Online providers can fail or block Railway · Private bot control interface included</footer>
+<script type="module" src="/ui.js"></script>
+</body></html>

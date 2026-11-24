@@ -10,3 +10,10 @@ data
 *.sqlite*
 README.md
 DEPLOY.md
+**/node_modules
+**/.cloud-venv
+**/_slopsoil_upstream
+**/__pycache__
+**/.verified-source-downloads
+*.zip
+verification

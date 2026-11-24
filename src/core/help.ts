@@ -133,6 +133,7 @@ export function renderHelpCategory(member: GuildMember, key: ModuleKey) {
 
 export function groupLabel(group: string): string {
   const labels: Record<string, string> = {
+    streaming: 'Streaming',
     modules: 'Modules',
     channels: 'Channels',
     clips: 'Clips',

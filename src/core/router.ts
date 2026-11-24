@@ -39,6 +39,7 @@ import { executeKicks, revalidate } from '../purge/execute.js';
 import { NO_MENTIONS } from '../util/mentions.js';
 import { isValidPrefix } from '../env.js';
 import { isSoftError, soft } from '../util/discord.js';
+import { streaming } from '../streaming/service.js';
 import { log } from '../logger.js';
 
 type Any = ButtonInteraction | AnySelectMenuInteraction | ModalSubmitInteraction;
@@ -47,6 +48,7 @@ const SAVED = 'Saved.';
 
 export async function routeInteraction(interaction: Interaction): Promise<void> {
   try {
+    if (await streaming.handle(interaction)) return;
     if (interaction.isChatInputCommand()) return await onCommand(interaction);
     if (interaction.isButton()) return await onComponent(interaction);
     if (interaction.isAnySelectMenu()) return await onComponent(interaction);
@@ -279,7 +281,7 @@ async function onSettings(
 
     case 's.m': {
       if (!isOwner(member)) return await denied(interaction, 'Owner only.');
-      const key = args[0] as 'clips' | 'activity' | 'purge';
+      const key = args[0] as 'clips' | 'activity' | 'purge' | 'streaming';
       const settings = getSettings(guildId);
       setByPath(guildId, `modules.${key}`, !settings.modules[key]);
       return await show(interaction, renderGroup(member, 'modules', interaction.client));

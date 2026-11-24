@@ -6,6 +6,7 @@ import {
   type Guild,
   type Message,
 } from 'discord.js';
+import { streaming } from './streaming/service.js';
 import { loadEnv } from './env.js';
 import { log, setLogLevel } from './logger.js';
 import { openDatabase } from './db/index.js';
@@ -70,6 +71,7 @@ client.once(Events.ClientReady, async (ready) => {
     scheduleUpkeep(guild.id);
   }
 
+  await streaming.start(client);
   reconcileOnReady(ready);
   startCoverage(ready);
   startScheduler(client);
@@ -97,6 +99,7 @@ client.on(Events.InteractionCreate, (interaction) => {
 
 client.on(Events.MessageCreate, (message: Message) => {
   if (!message.inGuild()) return;
+  streaming.onMessage(message);
 
   // A text command is an instruction, not conversation: it gets answered, and
   // it does not earn activity. Otherwise `!allies` would be a way to farm the
@@ -123,6 +126,7 @@ client.on(Events.MessageUpdate, (_old, updated) => {
     try {
       const message = updated.partial ? await updated.fetch() : updated;
       if (!message.inGuild()) return;
+  streaming.onMessage(message);
       await handleClipsUpdate(message);
     } catch {
       /* message vanished */
@@ -131,7 +135,7 @@ client.on(Events.MessageUpdate, (_old, updated) => {
 });
 
 client.on(Events.MessageDelete, (message) => {
-  if (message.id) clips.markDeleted(message.id);
+  if (message.id) {clips.markDeleted(message.id);streaming.onDelete(message.id);}
 });
 
 client.on(Events.MessageReactionAdd, (reaction, user) => {
@@ -214,6 +218,7 @@ async function shutdown(signal: string): Promise<void> {
   } catch (error) {
     log.error('Could not flush voice sessions', error);
   }
+  await streaming.close();
   await client.destroy();
   process.exit(0);
 }

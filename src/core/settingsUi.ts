@@ -21,6 +21,7 @@ import {
   type GuildSettings,
 } from '../db/settings.js';
 import { button, container, divider, heading, row, selectRow, text, ACCENT_MUTED } from './ui.js';
+import { settingsCard } from '../streaming/ui.js';
 import { Ids } from './ids.js';
 import { groupLabel } from './help.js';
 import { canEditGroup, DELEGATABLE_GROUPS, tierOf } from './permissions.js';
@@ -34,10 +35,11 @@ import { healthGlyph, overallStatus } from './status.js';
  * current values, native pickers, and a Back button.
  */
 
-export const GROUPS = ['modules', 'channels', 'activity', 'clips', 'permissions', 'emojis', 'status'] as const;
+export const GROUPS = ['modules', 'channels', 'activity', 'clips', 'permissions', 'emojis', 'streaming', 'status'] as const;
 export type Group = (typeof GROUPS)[number];
 
 const GROUP_BLURBS: Record<Group, string> = {
+  streaming: 'Streaming account and playback',
   modules: 'Turn parts of Camelot on and off',
   channels: 'Where Camelot watches and posts',
   activity: 'How activity is counted',
@@ -109,8 +111,8 @@ function renderModules(member: GuildMember) {
   const toggles = MODULES.filter((module) => module.togglable).map((module) =>
     button(
       Ids.settingsModule(module.key),
-      `${settings.modules[module.key as 'clips' | 'activity' | 'purge'] ? 'Turn off' : 'Turn on'} ${module.name}`,
-      settings.modules[module.key as 'clips' | 'activity' | 'purge'] ? ButtonStyle.Secondary : ButtonStyle.Success,
+      `${settings.modules[module.key as 'clips' | 'activity' | 'purge' | 'streaming'] ? 'Turn off' : 'Turn on'} ${module.name}`,
+      settings.modules[module.key as 'clips' | 'activity' | 'purge' | 'streaming'] ? ButtonStyle.Secondary : ButtonStyle.Success,
     ),
   );
 
@@ -529,6 +531,8 @@ function renderStatus(member: GuildMember) {
 
 export function renderGroup(member: GuildMember, group: Group, client?: Client) {
   switch (group) {
+    case 'streaming':
+      return settingsCard(member);
     case 'modules':
       return renderModules(member);
     case 'channels':

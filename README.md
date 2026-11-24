@@ -1,3 +1,8 @@
+# Camelot Streaming update
+
+Start with [STREAMING.md](STREAMING.md) for the new module and Railway deployment.
+The original bot documentation follows. Existing clips, activity and purge data are preserved.
+
 # 👑 Camelot
 
 A quiet Discord bot for a small friends server. Four commands, three modules,

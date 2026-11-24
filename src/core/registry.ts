@@ -8,7 +8,7 @@ import type { Tier } from './permissions.js';
  * removing a command updates all three at once and Help can never drift.
  */
 
-export type ModuleKey = 'core' | 'clips' | 'activity' | 'purge';
+export type ModuleKey = 'core' | 'clips' | 'activity' | 'purge' | 'streaming';
 
 export interface CommandSpec {
   name: string;
@@ -58,6 +58,11 @@ export interface ModuleSpec {
 }
 
 export const MODULES: ModuleSpec[] = [
+  {key:'streaming',name:'Streaming',blurb:'Watch together. One person holds the controls.',togglable:true,requires:[],permissions:[
+    {flag:PermissionFlagsBits.SendMessages,name:'Send Messages'},
+    {flag:PermissionFlagsBits.ReadMessageHistory,name:'Read Message History'},
+    {flag:PermissionFlagsBits.AttachFiles,name:'Attach Files'},
+  ],events:['messageCreate','voiceStateUpdate','interactionCreate'],settingsGroups:['streaming']},
   {
     key: 'core',
     name: 'Core',
@@ -111,6 +116,7 @@ export const MODULES: ModuleSpec[] = [
 ];
 
 export const COMMANDS: CommandSpec[] = [
+  {name:'stream',description:'Open TV controls in your voice channel.',module:'streaming',tier:'member',settingsGroup:'streaming',slashOnly:true},
   {
     name: 'help',
     description: 'See what Camelot does.',

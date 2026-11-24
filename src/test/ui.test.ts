@@ -185,8 +185,8 @@ describe('the registry is the single source of truth', () => {
     }
   });
 
-  it('matches the four commands that were asked for', () => {
-    assert.deepEqual(COMMANDS.map((command) => command.name).sort(), ['activity', 'help', 'purge', 'settings']);
+  it('matches the registered user commands', () => {
+    assert.deepEqual(COMMANDS.map((command) => command.name).sort(), ['activity', 'help', 'purge', 'settings', 'stream']);
   });
 
   it('keeps /allies as the short way to say /activity', () => {

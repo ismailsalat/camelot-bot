@@ -1,0 +1,10 @@
+node_modules/
+.cloud-venv/
+.verified-source-downloads/
+_slopsoil_upstream/
+SOURCE-VERIFIED-LOCAL.txt
+COPYING-GPL-3.0.txt
+__pycache__/
+*.pyc
+.env
+*.log

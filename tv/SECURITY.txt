@@ -1,0 +1,10 @@
+Camelot TV Online Preview - external-source risk notice
+
+This package makes HTTPS calls to third-party anime content providers. Their websites,
+JavaScript SDK adapters, and signed media URLs are untrusted. Sources may be
+unauthorized to redistribute copyrighted works and may block Railway server IPs.
+Use streams you have rights to access and share. Do not circumvent DRM or access controls.
+
+The Discord self-bot transport is unofficial and prohibited by Discord. Use a disposable
+account. Streaming doesn't become authorized by using a separate account.
+No credentials are embedded in this ZIP. Install only from sources you trust.

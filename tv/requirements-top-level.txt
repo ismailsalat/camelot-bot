@@ -1,0 +1,7 @@
+# Versioned top-level dependencies. Transitive dependencies remain unresolved until pip runs.
+# Native wheels only (no source builds). Do not pretend this is a fully audited lockfile.
+discord.py-self==2.1.0
+discord-protos==0.0.2  # Official PyPI source archive only; hash-checked by launcher
+PyNaCl==1.6.2
+davey==0.1.6
+dave.py==1.1.0

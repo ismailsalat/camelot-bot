@@ -113,7 +113,10 @@ export interface GuildSettings {
     clips: boolean;
     activity: boolean;
     purge: boolean;
+    streaming: boolean;
   };
+
+  streaming: {idleSeconds:number;emptySeconds:number;autoNext:boolean};
 
   channels: {
     clips: string | null;
@@ -209,7 +212,9 @@ export const DEFAULT_SETTINGS: GuildSettings = {
 
   core: { prefix: null, textCommands: true },
 
-  modules: { clips: true, activity: true, purge: true },
+  modules: { clips: true, activity: true, purge: true, streaming: false },
+
+  streaming: {idleSeconds:120,emptySeconds:60,autoNext:true},
 
   channels: { clips: null, highlights: null },
 
@@ -220,7 +225,7 @@ export const DEFAULT_SETTINGS: GuildSettings = {
 
   permissions: {
     adminRoles: [],
-    adminEditable: ['channels', 'clips', 'activity'],
+    adminEditable: ['channels', 'clips', 'activity', 'streaming'],
   },
 
   media: {

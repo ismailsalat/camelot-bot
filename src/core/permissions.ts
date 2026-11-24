@@ -37,12 +37,13 @@ export function canEditGroup(member: GuildMember, group: string): boolean {
   const tier = tierOf(member);
   if (tier === 'owner') return true;
   if (tier !== 'admin') return false;
+  if (group === 'streaming') return true;
   if ((OWNER_ONLY_GROUPS as readonly string[]).includes(group)) return false;
   return getSettings(member.guild.id).permissions.adminEditable.includes(group);
 }
 
 /** Groups the owner is allowed to hand to admins. */
-export const DELEGATABLE_GROUPS = ['channels', 'clips', 'activity', 'emojis', 'status'] as const;
+export const DELEGATABLE_GROUPS = ['channels', 'clips', 'activity', 'emojis', 'streaming', 'status'] as const;
 
 export function describeTier(tier: Tier): string {
   if (tier === 'owner') return 'Server owner';
