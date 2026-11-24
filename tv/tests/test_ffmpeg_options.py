@@ -104,6 +104,20 @@ class EnvCleanTests(unittest.TestCase):
         self.assertEqual(len(bad), 2)
 
 
+class QualityTests(unittest.TestCase):
+    def _scale(self, quality):
+        import os
+        src = (Path(__file__).parents[1] / 'runtime' / 'camelot_worker.py').read_text()
+        ns = {'os': os, 're': __import__('re'), 'logging': __import__('logging')}
+        exec(src[src.index("X264_PRESETS="):src.index("_original_ffmpeg_cmd=")], ns)
+        ns['QUALITY']['p'] = quality
+        cmd = ['ffmpeg', '-i', 'in', '-vf', 'subtitles=x.ass,scale=1280:720', '-c:v', 'libx264', '-preset', 'ultrafast']
+        ns['_tune_x264'](cmd)
+        return cmd[cmd.index('-vf') + 1]
+    def test_720p_is_the_default(self): self.assertIn('scale=1280:720:flags=lanczos', self._scale('720p'))
+    def test_1080p_can_be_chosen_per_play(self):
+        vf = self._scale('1080p'); self.assertIn('scale=1920:1080:flags=lanczos', vf); self.assertNotIn('1280:720', vf)
+
 class SlowPresetTests(unittest.TestCase):
     def _run(self, preset, allow=None):
         import os
@@ -142,15 +156,15 @@ class BitrateCapTests(unittest.TestCase):
         sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "runtime"))
     def _cmd(self, br, res='scale=1280:720'):
         return ['ffmpeg', '-vf', res, '-c:v', 'libx264', '-b:v', br, '-maxrate', br, '-bufsize', br]
-    def test_720p_is_capped_and_buffer_halved(self):
+    def test_720p_is_capped_and_buffer_shrunk(self):
         import env_clean
         cmd = self._cmd('10000k'); notes = env_clean.cap_bitrate_args(cmd, {})
-        self.assertEqual(cmd[cmd.index('-b:v') + 1], '4000k'); self.assertEqual(cmd[cmd.index('-maxrate') + 1], '4000k')
-        self.assertEqual(cmd[cmd.index('-bufsize') + 1], '2000k'); self.assertTrue(notes)
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '3500k'); self.assertEqual(cmd[cmd.index('-maxrate') + 1], '3500k')
+        self.assertEqual(cmd[cmd.index('-bufsize') + 1], '1400k'); self.assertTrue(notes)
     def test_lower_bitrate_is_kept(self):
         import env_clean
         cmd = self._cmd('2500k'); env_clean.cap_bitrate_args(cmd, {})
-        self.assertEqual(cmd[cmd.index('-b:v') + 1], '2500k'); self.assertEqual(cmd[cmd.index('-bufsize') + 1], '1250k')
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '2500k'); self.assertEqual(cmd[cmd.index('-bufsize') + 1], '1000k')
     def test_opt_out_keeps_high_bitrate(self):
         import env_clean
         cmd = self._cmd('10000k'); env_clean.cap_bitrate_args(cmd, {'STREAM_ALLOW_HIGH_BITRATE': '1'})

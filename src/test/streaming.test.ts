@@ -44,9 +44,9 @@ test('panel fits Discord row limits and keeps exact durable action ids',()=>{
  const s=fixture();const json=panel(s,2).toJSON();
  const rows=json.components.filter((c:any)=>c.type===1) as any[];
  assert(rows.every(r=>r.components.length<=5));
- assert.deepEqual(rows[0].components.map((b:any)=>b.label),['Previous ep','Next ep','Stop','Pause']);
- assert(rows[0].components[0].disabled);assert(!rows[0].components[1].disabled);
- assert.equal(rows[1].components[2].custom_id,'tv:abc:seek');
+ assert.deepEqual(rows[0].components.map((b:any)=>b.label),['Previous','Pause','Next','Stop']);
+ assert(rows[0].components[0].disabled);assert(!rows[0].components[2].disabled);
+ assert.equal(rows[1].components[0].custom_id,'tv:abc:seek');
  s.duration=null;const unknown=panel(s,0).toJSON();
  const seek=(unknown.components.filter((c:any)=>c.type===1) as any[])[1];assert(seek.components[0].disabled);
 });
@@ -102,7 +102,7 @@ test('Next changes the episode, asks worker for the new episode, and keeps its o
    throw Error('unexpected '+path);
  }};
  const interaction={customId:'tv:abc:next',isChatInputCommand:()=>false,isRepliable:()=>true,inCachedGuild:()=>true,member:member('alice'),isButton:()=>true,isModalSubmit:()=>false,isStringSelectMenu:()=>false,deferred:false,replied:false,
-   deferReply:async function(){this.deferred=true},editReply:async()=>{},reply:async()=>{}} as any;
+   deferReply:async function(){this.deferred=true},deleteReply:async function(){this.deleted=true},editReply:async()=>{},reply:async()=>{}} as any;
  assert(await tv.handle(interaction));
  assert.equal(tv.session.episode,1);assert.equal(tv.session.owner,'alice');
  assert.equal(calls.find(c=>c[0]==='/api/play')[1].unit,'e2');
@@ -146,7 +146,7 @@ test('malformed persisted session cannot crash startup',()=>{
 });
 test('loading disables playback changes but keeps Stop available',()=>{
  const s=fixture();s.phase='loading';const rows=panel(s,0).toJSON().components.filter((x:any)=>x.type===1) as any[];
- assert(rows[0].components[1].disabled);assert(!rows[0].components[2].disabled);assert(rows[1].components.every((x:any)=>x.disabled));
+ assert(rows[0].components[1].disabled);assert(!rows[0].components[3].disabled);assert(rows[1].components.slice(0,3).every((x:any)=>x.disabled));
 });
 test('gate idle waits for completion even after the operation rejects',async()=>{
  const gate=new Gate();let finish!:()=>void;let idle=false;
@@ -157,7 +157,7 @@ test('gate idle waits for completion even after the operation rejects',async()=>
 function interaction(op:string,user='alice'){
  const replies:any[]=[];
  return {customId:`tv:abc:${op}`,isChatInputCommand:()=>false,isRepliable:()=>true,inCachedGuild:()=>true,member:member(user),isButton:()=>true,isModalSubmit:()=>false,isStringSelectMenu:()=>false,deferred:false,replied:false,replies,
- deferReply:async function(){this.deferred=true},editReply:async(p:any)=>{replies.push(p)},reply:async(p:any)=>{replies.push(p)}} as any;
+ deferReply:async function(){this.deferred=true},deleteReply:async function(){this.deleted=true},editReply:async(p:any)=>{replies.push(p)},reply:async(p:any)=>{replies.push(p)}} as any;
 }
 test('unauthorized click during loading never changes the active stream to error',async()=>{
  const tv:any=new Streaming();tv.session=fixture();tv.session.phase='loading';setByPath('guild','modules.streaming',true);
@@ -189,6 +189,7 @@ test('seek uses fresh worker position and reports success only after acknowledgm
  const tv:any=new Streaming();tv.session=fixture();setByPath('guild','modules.streaming',true);tv.paint=async()=>{};
  let finish!:()=>void;let target=0;
  tv.bridge={call:async(path:string,body:any)=>{if(path==='/api/state')return{status:'streaming',position:60,duration:120};target=body.position;await new Promise<void>(r=>finish=r)}};
- const i=interaction('forward');const pending=tv.handle(i);while(!finish)await new Promise(r=>setImmediate(r));
- assert.equal(i.replies.length,0);assert.equal(target,90);finish();await pending;assert.equal(tv.session.position,90);assert(i.replies[0].content.includes('1:30'));
+ const i=interaction('seekInput');i.isButton=()=>false;i.isModalSubmit=()=>true;i.fields={getTextInputValue:()=>'+30'};
+ const pending=tv.handle(i);while(!finish)await new Promise(r=>setImmediate(r));
+ assert.equal(i.replies.length,0);assert.equal(target,90);finish();await pending;assert.equal(tv.session.position,90);assert(i.deleted);assert.equal(i.replies.length,0);
 });

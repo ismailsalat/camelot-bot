@@ -147,3 +147,11 @@ The 11 added tests cover actual text routing, module/voice restrictions, busy-se
 - **Smoother video:** keyframe packets are paced (`STREAM_PACKET_PACE` defaults to 0.6) instead of sent as one burst; video bitrate is capped at 4000k for 720p (6000k for 1080p) and the rate-control buffer is halved, so keyframes stay small. Opt out with `STREAM_ALLOW_HIGH_BITRATE=1`. Default x264 preset is now `superfast` (`ultrafast` was the pinned default and the least efficient).
 - Delete `STREAM_X264_PRESET` and `STREAM_VIDEO_BITRATE` from Railway; the defaults are now right.
 - Tests: `test_live_session.py` (SwapTests), `test_ffmpeg_options.py` (BitrateCapTests, SlowPresetTests).
+
+## v22 — clearer panel, seasons, quality button
+
+- **Panel:** `Season 2 · Episode 5 of 12 · SUB · 720p`, then a progress bar with the time (`━━━━●─────  10:31 / 21:32`), then the state and source. The ±30 s buttons are gone; **Jump to time** (12:30, 750, +90, -30) stays. Successful presses no longer leave a private "controls updated" message.
+- **Dropdowns:** Season (when the search found other seasons of the same anime) and Episode (long shows page 23 at a time with "Earlier / Later episodes" entries). The Source dropdown only appears after a playback failure.
+- **Seasons** come from the titles in the same search (`seasons.ts`): grouped by title, ordered by stated number / year, with movies and specials marked. No extra network requests, so playback is not disturbed.
+- **Quality:** 720p30 is the default. When the source really has 1080p (checked with ffprobe), an **Use 1080p** button appears; pressing it swaps the video on the live connection at the same position (no reconnect). The choice resets to 720p for a new anime and falls back to 720p if an episode has no 1080p. 1080p needs more CPU; if it stutters on your Railway plan press **Use 720p**.
+- **Smoothness:** packet pacing 0.7, 720p bitrate cap 3500k (1080p 6000k), rate-control buffer 40% of the bitrate.

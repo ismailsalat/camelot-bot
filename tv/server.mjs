@@ -135,13 +135,18 @@ function consumeWorkerLine(line,kind){
   if(/(token|credentials delivered|user agent|TLS fingerprint|session id)/i.test(line)&&!/(error|warning)/i.test(line))return;
   if(/(ERROR|WARNING|Connected to test server|go-live stream finished|video stats|GoLive connection ready|starting go-live)/i.test(line))log(kind,line);
 }
-async function probeDuration(source){
+async function probeSource(source){
  const {ffmpegInputOptions}=await import('./src/ffmpeg.mjs');
  const {ffmpegHeaderArgs}=await import('./src/source.mjs');
- const args=['-v','error','-rw_timeout','12000000',...await ffmpegInputOptions(source.isHLS),...ffmpegHeaderArgs(source.headers),'-i',source.url,'-show_entries','format=duration','-of','json'];
- return new Promise(resolve=>execFile('ffprobe',args,{timeout:15000,maxBuffer:100000},(error,stdout)=>{
-   if(error)return resolve(null);
-   try{const value=Number(JSON.parse(stdout).format?.duration);resolve(Number.isFinite(value)&&value>0?value:null)}catch{resolve(null)}
+ const args=['-v','error','-rw_timeout','12000000',...await ffmpegInputOptions(source.isHLS),...ffmpegHeaderArgs(source.headers),'-i',source.url,'-show_entries','format=duration:stream=codec_type,height','-of','json'];
+ return new Promise(resolve=>execFile('ffprobe',args,{timeout:15000,maxBuffer:200000},(error,stdout)=>{
+   if(error)return resolve({duration:null,height:0});
+   try{
+     const data=JSON.parse(stdout),value=Number(data.format?.duration);
+     // A master playlist lists every quality, so the tallest video stream is the best the source offers.
+     const height=Math.max(0,...(data.streams||[]).filter(s=>s.codec_type==='video').map(s=>Number(s.height)||0));
+     resolve({duration:Number.isFinite(value)&&value>0?value:null,height});
+   }catch{resolve({duration:null,height:0})}
  }));
 }
 const cache=new Map();
@@ -199,7 +204,7 @@ async function body(req){
 }
 function state(){return {version:VERSION,cloud:CLOUD,status:worker.status,connected:worker.ready,account:worker.account,
  guild:worker.ready?worker.guild:null,channels:worker.channels,playing:worker.playing,
- position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,config:streamConfig,envFixes,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+ position:worker.position||0,duration:worker.duration||null,quality:worker.quality||'720p',maxHeight:worker.maxHeight||0,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,config:streamConfig,envFixes,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
 function err(res,e,code=400){const m=String(e?.message||e||'Unknown error').replace(/https?:\/\/[^\s<>"']+/g,'[media URL]');log('error',m);json(res,code,{error:m.slice(0,1800)})}
 const STATIC={'/':'index.html','/ui.js':'ui.js','/ui.css':'ui.css'};
 const TYPES={'index.html':'text/html; charset=utf-8','ui.js':'application/javascript; charset=utf-8','ui.css':'text/css; charset=utf-8'};
@@ -265,6 +270,7 @@ const server=http.createServer(async(req,res)=>{
        const b=await body(req);
        const generation=++playGeneration;
        const deadline=Date.now()+180000;
+       let maxHeight=0;
        const provider=String(b.provider||''),media=String(b.media||''),unit=String(b.unit||'');
        const episodes=cachedGet(`episodes:${provider}:${media}`)||[];
        const chosen=episodes.find(e=>e.id===unit);
@@ -295,16 +301,20 @@ const server=http.createServer(async(req,res)=>{
          onProgress:msg=>log(/unavailable|failed|no video|HTTP|missing|timed out|Ambiguous/i.test(msg)?'warning':'info',msg),
          onSuccess:async(source,entry)=>{
            if(checkOnly){await discardPrepared(source);return;}
-           const duration=await probeDuration(source);
+           const {duration,height}=await probeSource(source);
+           maxHeight=height;
+           // 1080p only when the source really has it; 720p is the default and the safe choice.
+           const quality=b.quality==='1080p'&&height>=1000?'1080p':'720p';
+           worker.quality=quality;worker.maxHeight=height;
            if(generation!==playGeneration||Date.now()>deadline)throw new Error('Playback cancelled');
            worker.duration=duration;worker.position=Number(b.position)||0;worker.failReason='';worker.status='starting';
-           await commands.request({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
+           await commands.request({op:'play',duration,position:Math.min(Number(b.position)||0,Math.max(0,(duration||864000)-1)),channel,quality,url:source.url,headers:source.headers,isHLS:source.isHLS,subtitlePath:source.subtitlePath,
              title:`${String(original.title||'Camelot TV').slice(0,55)} · E${chosen.number} ${lang.toUpperCase()}`});
            const old=activeCaptions;activeCaptions=source;retireCaptions(old);
          }
        });
        log('info',`Verified a real video frame from ${result.provider}${checkOnly?'':' ; requested Go Live'}`);
-       return json(res,checkOnly?200:202,{ok:true,quality:result.quality,provider:result.provider,
+       return json(res,checkOnly?200:202,{ok:true,quality:result.quality,maxHeight,hd:maxHeight>=1000,streamQuality:worker.quality||'720p',provider:result.provider,
          language:lang,subtitle:result.subtitle,failures:result.failures,message:checkOnly?'Episode video verified. Press Play to stream it.':'Verified real video frame; starting Go Live.'});
      }finally{playBusy=false}
    }
@@ -345,7 +355,9 @@ const server=http.createServer(async(req,res)=>{
    if(['/api/pause','/api/resume','/api/seek','/api/standby'].includes(path)&&req.method==='POST'){
      const b=await body(req);
      if(path==='/api/seek'&&(!Number.isFinite(b.position)||!worker.duration||b.position<0||b.position>=worker.duration))throw new Error('Choose a time inside the episode');
-     await commands.request({op:path.split('/').pop(),position:b.position,channel:b.channel});
+     if(path==='/api/seek'&&b.quality==='1080p'&&!(worker.maxHeight>=1000))b.quality='720p';
+     if(path==='/api/seek'&&(b.quality==='720p'||b.quality==='1080p'))worker.quality=b.quality;
+     await commands.request({op:path.split('/').pop(),position:b.position,channel:b.channel,quality:path==='/api/seek'?b.quality:undefined});
      return json(res,202,{ok:true});
    }
    if(path==='/api/stop'&&req.method==='POST'){

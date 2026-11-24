@@ -29,7 +29,7 @@ test('panel shows a Queue button with a count and an Up next line; queue manager
  const json=JSON.stringify(panel(s,0).toJSON());
  assert(json.includes('Queue · 4'));assert(json.includes('Up next: 1. Show 1'));assert(json.includes('+1 more'));
  const rows=(panel(s,0).toJSON().components.filter((c:any)=>c.type===1) as any[]);assert(rows.every(r=>r.components.length<=5));
- assert(rows[2].components.some((b:any)=>b.custom_id==='tv:aaaaaaaaaaaa:lineup'));
+ assert(rows[1].components.some((b:any)=>b.custom_id==='tv:aaaaaaaaaaaa:lineup'));
  assert.equal(upNext(fixture()),'');
  const view=queueView(s);assert(view.content.includes('Queue** · 4'));assert(view.components.length===2); // buttons + remove menu
  assert(queueView(fixture()).components.length===1);

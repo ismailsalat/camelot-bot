@@ -42,6 +42,8 @@ export function restoreSession():Session|null{
     if(!s.episodes.every((e:any)=>e&&typeof e.id==='string'&&Number.isFinite(e.number))||!s.sources.every((x:any)=>typeof x==='string'))return null;
     if(s.title&&(typeof s.title.id!=='string'||typeof s.title.provider!=='string'||typeof s.title.title!=='string'))return null;
     if(s.title&&typeof s.title.poster!=='string')delete s.title.poster;
+    if(s.title&&s.title.family!==undefined&&!Array.isArray(s.title.family))delete s.title.family;
+    if(s.quality!=='720p'&&s.quality!=='1080p')delete s.quality;
     s.duration=Number.isFinite(s.duration)&&s.duration>0?s.duration:null;
     if(typeof s.source!=='string')s.source='auto';
     if(s.queue!==undefined)s.queue=Array.isArray(s.queue)?s.queue.filter((t:any)=>t&&typeof t.id==='string'&&typeof t.provider==='string'&&typeof t.title==='string').slice(0,20):[];

@@ -9,12 +9,13 @@ import {log} from '../logger.js';
 import {Bridge,type WorkerState} from './bridge.js';
 import {addToQueue,hasPanelControls,queueView,removeFromQueue,takeNext} from './queue.js';
 import {Gate,boundedPosition,clock,seconds,type Session,type Title} from './model.js';
+import {withFamily} from './seasons.js';
 import {clearToken,getToken,restoreSession,saveSession,saveToken} from './store.js';
 import {inputModal,panel,settingsCard} from './ui.js';
 
 type Waiter={guild:string;user:string;channel:string};
 /** Buttons and menus that live on the main panel; only the newest panel message may use them. */
-const PANEL_OPS=new Set(['prev','next','stop','play','back','forward','seek','episode','search','lang','lineup','source']);
+const PANEL_OPS=new Set(['prev','next','stop','play','seek','epsel','season','quality','search','lang','lineup','source']);
 /** Queue actions anyone in the voice channel may use (removing and clearing still need the controller). */
 const SHARED_OPS=new Set(['lineup','qadd','qaddInput','qpick']);
 export class Streaming {
@@ -48,7 +49,7 @@ export class Streaming {
   private lastStatusLog=0;
   /** Milliseconds per countdown step (tests set 0). */
   countdownMs=1000;
-  private searchResults=new Map<string,{owner:string;session:string;rows:Title[];expires:number}>();
+  private searchResults=new Map<string,{owner:string;session:string;rows:Title[];all:Title[];expires:number}>();
   async start(client:Client){
     this.client=client;this.session=restoreSession();
     if(this.session){Object.assign(this.session,{owner:null,phase:'offline',note:'Restarted. Press Play to resume, or Find anime.',changed:Date.now()});saveSession(this.session);await this.paint();}
@@ -183,7 +184,7 @@ export class Streaming {
     const [data]=await Promise.all([this.episodesFor(title),this.bridge.call('/api/standby',{channel:s.channel})]);
     s.title={...title,...data.selection,poster:title.poster||data.selection.poster};s.episodes=data.episodes;s.episode=0;
     s.sources=[...new Set<string>(data.sources.filter((x:any)=>x.status==='checked').map((x:any)=>x.provider))];
-    s.source='auto';s.actualSource=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
+    s.source='auto';s.actualSource=undefined;s.hd=false;s.quality='720p';s.epPage=undefined;s.position=0;s.duration=null;s.phase='idle';s.note='Ready. Press Play.';this.persist();await this.paint();
   }
   private async play(position=0){await this.playback(()=>this.startEpisode(position))}
   private async startEpisode(position:number){
@@ -193,7 +194,7 @@ export class Streaming {
     await this.prepare();
     // The episode list was loaded when the anime was picked, so play it straight away; asking the TV
     // service for it again re-inspected every source (~4 s). A restarted service is handled by the retry below.
-    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,position};
+    const playRequest={guild:s.guild,channel:s.channel,provider:s.title.provider,media:s.title.id,unit:ep.id,lang:s.lang,subtitles:s.lang==='sub'?'en':'off',source:s.source,quality:s.quality||'720p',position};
     let result:any;
     try{result=await this.bridge.call('/api/play',playRequest)}
     catch(error){
@@ -209,7 +210,7 @@ export class Streaming {
       if(!chosen)throw new Error('That episode is not listed anymore. Choose another episode.');
       result=await this.bridge.call('/api/play',{...playRequest,unit:chosen.id});
     }
-    s.actualSource=result.provider;s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
+    s.actualSource=result.provider;s.hd=!!result.hd;s.quality=result.streamQuality==='1080p'?'1080p':'720p';s.note='Starting video…';s.changed=Date.now();this.lastMotion=Date.now();this.lastPosition=position;this.persist();await this.paint();
   }
   private async release(note='Available. Use /stream to take a turn.'){
     const s=this.session;if(!s)return;
@@ -434,8 +435,8 @@ export class Streaming {
         if(!s.owner)throw new Error('Start Streaming with /stream first.');
         if(s.guild!==member.guild.id||member.voice.channelId!==s.channel)throw new Error('Join the active voice channel to use the queue.');
       }else this.controller(member);
-      if(i.isButton()&&['search','seek','episode','qadd'].includes(op||'')){
-        const config=op==='search'?['Find anime','Anime name','Dr. STONE']:op==='qadd'?['Add to queue','Anime name','Dr. STONE']:op==='seek'?['Jump to time',`${clock(s.position)} / ${s.duration?clock(s.duration):'unknown'}`,'12:30, 750, +90, or -30']:['Choose episode','Episode number',String(s.episodes[s.episode]?.number||1)];
+      if(i.isButton()&&['search','seek','qadd'].includes(op||'')){
+        const config=op==='search'?['Find anime','Anime name','Dr. STONE']:op==='qadd'?['Add to queue','Anime name','Dr. STONE']:['Jump to time',`Now ${clock(s.position)} of ${s.duration?clock(s.duration):'unknown'}`,'12:30, 750, +90, or -30'];
         await i.showModal(inputModal(`tv:${s.id}:${op}Input`,config[0]!,config[1]!,config[2]!));return true;
       }
       if((i.isButton()||i.isStringSelectMenu())&&['qskip','qclear','qdel','qpick'].includes(op||''))await i.deferUpdate();
@@ -457,7 +458,7 @@ export class Streaming {
         if(SHARED_OPS.has(op||'')){if(!s.owner||member.voice.channelId!==s.channel)throw new Error('Join the active voice channel to use the queue.')}
         else this.controller(member);
         s.changed=Date.now();
-        if(['play','prev','next','episodeInput','pick','qskip'].includes(op||''))this.autoToken++;
+        if(['play','prev','next','episodeInput','epsel','season','pick','qskip'].includes(op||''))this.autoToken++;
         const showQueue=async(note='')=>{this.persist();await this.paint();await i.editReply({...queueView(s,note),allowedMentions:NO_MENTIONS})};
         if(op==='lineup'){await showQueue();return}
         if(op==='qclear'){s.queue=[];await showQueue('Queue cleared.');return}
@@ -471,32 +472,50 @@ export class Streaming {
           const q=i.fields.getTextInputValue('value').trim();if(q.length<2)throw new Error('Type at least two letters.');
           await this.bridge.start();const found=await this.bridge.call('/api/search?'+new URLSearchParams({q}));
           const seen=new Set<string>();
-          const rows=(found.results as Title[]).filter(t=>{const key=t.title.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g,'');if(seen.has(key))return false;seen.add(key);return true}).slice(0,25);if(!rows.length)throw new Error('No results. Try another spelling.');
-          const key=randomBytes(5).toString('hex');this.searchResults.set(key,{owner:member.id,session:s.id,rows,expires:Date.now()+600000});
+          const all=(found.results as any[]).map(t=>({...t,count:t.count??t.numberOfEpisodes})) as Title[];
+          const rows=all.filter(t=>{const key=t.title.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g,'');if(seen.has(key))return false;seen.add(key);return true}).slice(0,25);if(!rows.length)throw new Error('No results. Try another spelling.');
+          const key=randomBytes(5).toString('hex');this.searchResults.set(key,{owner:member.id,session:s.id,rows,all,expires:Date.now()+600000});
           const select=new StringSelectMenuBuilder().setCustomId(`tv:${s.id}:${op==='qaddInput'?'qpick':'pick'}:${key}`).setPlaceholder('Choose anime').addOptions(rows.map((t,n)=>({label:t.title.slice(0,100),description:t.provider,value:String(n)})));
           await i.editReply({content:'Choose a title.',components:[new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],allowedMentions:NO_MENTIONS});return;
         }
         if(i.isStringSelectMenu()&&op==='qpick'){
           const found=this.searchResults.get(parts[3]!);if(!found||found.session!==s.id||found.owner!==member.id||found.expires<Date.now())throw new Error('Search expired. Use Add anime again.');
           const title=found.rows[Number(i.values[0])];if(!title)throw new Error('Choose a listed title.');
-          const result=addToQueue(s,title);
+          const result=addToQueue(s,withFamily(title,found.rows,found.all));
           await showQueue(result==='added'?`Added ${title.title.slice(0,60)}.`:result==='duplicate'?'That anime is already playing or queued.':'The queue is full.');return;
         }
         if(i.isStringSelectMenu()&&op==='pick'){
           const found=this.searchResults.get(parts[3]!);if(!found||found.session!==s.id||found.owner!==member.id||found.expires<Date.now())throw new Error('Search expired. Use Find anime again.');
           const title=found.rows[Number(i.values[0])];if(!title)throw new Error('Choose a listed title.');
-          await this.load(title);this.scheduleAutoStart(s);await reply('Starting automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');return;
+          await this.load(withFamily(title,found.rows,found.all));this.scheduleAutoStart(s);await reply('Starting automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');return;
         }
                 if(op==='next'||op==='prev'||op==='episodeInput'){
           const index=op==='episodeInput'&&i.isModalSubmit()?s.episodes.findIndex(e=>e.number===Number(i.fields.getTextInputValue('value'))):s.episode+(op==='next'?1:-1);
           if(index<0||index>=s.episodes.length)throw new Error('That episode is not available.');
           s.episode=index;s.duration=null;s.position=0;this.retries=0;await this.play();
-        }else if(['seekInput','back','forward'].includes(op||'')){
+        }else if(op==='epsel'&&i.isStringSelectMenu()){
+          const value=i.values[0]!;
+          if(value.startsWith('page:')){s.epPage=Math.max(0,Number(value.slice(5))||0);this.persist();await this.paint();return await i.deleteReply().catch(()=>{})}
+          const index=Number(value);
+          if(!Number.isInteger(index)||index<0||index>=s.episodes.length)throw new Error('That episode is not available.');
+          s.episode=index;s.epPage=undefined;s.duration=null;s.position=0;this.retries=0;await this.play();
+        }else if(op==='season'&&i.isStringSelectMenu()){
+          const family=s.title?.family||[];const pick=family[Number(i.values[0])];
+          if(!pick||!s.title)throw new Error('That season is not available.');
+          await this.load({...pick,family});this.scheduleAutoStart(s);
+          return await reply('Starting that season automatically. Camelot counts down 5-4-3-2-1 in the VC chat. Press Stop to cancel.');
+        }else if(op==='quality'){
+          if(!['playing','paused'].includes(s.phase)||!s.hd)throw new Error('1080p is only offered while a video that supports it is playing.');
+          const state=await this.bridge.call<WorkerState>('/api/state');
+          if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
+          const want=s.quality==='1080p'?'720p':'1080p';
+          await this.playback(async()=>{await this.bridge.call('/api/seek',{position:Math.max(0,state.position||s.position),quality:want});s.quality=want;s.position=state.position||s.position});
+        }else if(op==='seekInput'){
           if(!['playing','paused'].includes(s.phase))throw new Error('Press Play before changing the time.');
           const state=await this.bridge.call<WorkerState>('/api/state');
           if(!['streaming','paused'].includes(state.status))throw new Error('Playback is reconnecting. Try again in a moment.');
           s.position=state.position;s.duration=state.duration;
-          const n=op==='seekInput'&&i.isModalSubmit()?seconds(i.fields.getTextInputValue('value'),s.position):Math.max(0,Math.min((s.duration||0)-1,s.position+(op==='back'?-30:30)));
+          const n=i.isModalSubmit()?seconds(i.fields.getTextInputValue('value'),s.position):s.position;
           boundedPosition(n,s.duration);await this.playback(async()=>{await this.bridge.call('/api/seek',{position:n});s.position=n});
         }else if(op==='source'&&i.isStringSelectMenu()){
           const source=i.values[0]!;if(source!=='auto'&&!s.sources.includes(source))throw new Error('That source is no longer available.');s.source=source;this.retries=0;if(s.phase!=='idle')await this.play(s.position);
@@ -507,7 +526,9 @@ export class Streaming {
           else if(s.phase==='paused'){await this.play(s.position);}
           else await this.play(s.position);
         }
-        this.persist();await this.paint();await reply(s.phase==='paused'?'Paused.':s.phase==='loading'?`Starting episode ${s.episodes[s.episode]?.number}…`:['seekInput','back','forward'].includes(op||'')?`Time set to ${clock(s.position)} / ${clock(s.duration||0)}.`:'Streaming controls updated.');
+        this.persist();await this.paint();
+        // The panel itself shows what changed, so a successful press leaves no private message behind.
+        if(i.isModalSubmit()||i.isStringSelectMenu()||i.isButton())await i.deleteReply().catch(()=>{});else await reply('Streaming controls updated.');
       });
     }catch(error){
       const message=error instanceof Error?error.message:'Something went wrong. Try again.';

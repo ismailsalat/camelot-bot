@@ -1,4 +1,12 @@
-export interface Title {id:string;provider:string;title:string;poster?:string;aliases?:string[]}
+export interface Title {
+  id:string;provider:string;title:string;poster?:string;aliases?:string[];
+  /** Release year and episode total when the catalog knows them. */
+  year?:number;count?:number;
+  /** Season number within its family (0 = movie/special); set when other seasons were found in the search. */
+  season?:number;
+  /** The other seasons found in the same search, in watching order. */
+  family?:Title[];
+}
 export interface Episode {id:string;number:number;title:string;languages?:string[]}
 export type Phase='idle'|'loading'|'playing'|'paused'|'offline'|'error';
 export interface Session {
@@ -7,6 +15,10 @@ export interface Session {
   lang:'sub'|'dub';phase:Phase;position:number;duration:number|null;changed:number;note:string;
   /** Anime waiting to play after the current one, in order. */
   queue?:Title[];
+  /** Video size being streamed, and whether the current source also offers 1080p. */
+  quality?:'720p'|'1080p';hd?:boolean;
+  /** Which page of the episode dropdown is showing (long shows only). */
+  epPage?:number;
 }
 export function seconds(text:string, current=0):number {
   const s=text.trim();

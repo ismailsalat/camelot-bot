@@ -57,8 +57,8 @@ def cap_bitrate_args(cmd: list[str], environ=None) -> list[str]:
     """Keep the video bitrate and rate-control buffer in a range Discord can relay smoothly.
 
     Discord drops or stalls video that arrives faster than its relay accepts, which shows up as freezes that
-    start a few seconds after a smooth beginning. 720p anime looks the same at ~4 Mbps as at 10 Mbps, and a
-    half-second buffer keeps keyframes from arriving as one giant burst. STREAM_ALLOW_HIGH_BITRATE=1 opts out."""
+    start a few seconds after a smooth beginning. 720p anime looks the same at ~3.5 Mbps as at 10 Mbps, and a
+    sub-half-second buffer keeps keyframes from arriving as one giant burst. STREAM_ALLOW_HIGH_BITRATE=1 opts out."""
     env = os.environ if environ is None else environ
     notes: list[str] = []
     height = 720
@@ -66,7 +66,7 @@ def cap_bitrate_args(cmd: list[str], environ=None) -> list[str]:
         m = re.search(r'scale=(\d+):(\d+)', cmd[cmd.index('-vf') + 1])
         if m:
             height = int(m.group(2))
-    limit = 4000 if height <= 720 else 6000 if height <= 1080 else None
+    limit = 3500 if height <= 720 else 6000 if height <= 1080 else None
     allow = env.get('STREAM_ALLOW_HIGH_BITRATE', '').strip() == '1'
     rate = None
     for flag in ('-b:v', '-maxrate'):
@@ -81,7 +81,7 @@ def cap_bitrate_args(cmd: list[str], environ=None) -> list[str]:
                 rate = k if rate is None else min(rate, k)
     if rate and '-bufsize' in cmd[:-1]:
         i = cmd.index('-bufsize') + 1
-        want = f'{max(500, rate // 2)}k'
+        want = f'{max(500, rate * 2 // 5)}k'
         if cmd[i] != want:
             cmd[i] = want
             notes.append(f'-bufsize set to {want}')

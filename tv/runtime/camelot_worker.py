@@ -24,7 +24,10 @@ import nal_guard
 env_clean.report(env_clean.clean_stream_env())
 # Spread each keyframe's packets over most of a frame interval instead of sending them as one burst
 # (bursts overran Discord's relay and froze the picture a few seconds into playback).
-os.environ.setdefault('STREAM_PACKET_PACE','0.6')
+os.environ.setdefault('STREAM_PACKET_PACE','0.7')
+# 720p30 is the default; 1080p is chosen per episode from the panel (see QUALITY below).
+os.environ.setdefault('STREAM_QUALITY','720p')
+os.environ.setdefault('STREAM_FPS','30')
 
 import discord
 import discord.gateway
@@ -88,6 +91,7 @@ def clean_headers(raw):
 X264_PRESETS={'ultrafast','superfast','veryfast','faster','fast','medium'}
 SLOW_PRESETS={'veryfast','faster','fast','medium'}
 _warned_preset=[]
+QUALITY={'p':'720p'}  # set by each play request
 _logged_once=set()
 def _log_once(key,fmt,*args):
     if key in _logged_once:return
@@ -121,6 +125,8 @@ def _tune_x264(cmd):
         cmd[j]=':'.join(parts+['slices=1','sliced-threads=0'])
     if '-vf' in cmd:
         i=cmd.index('-vf')+1
+        wanted='1920:1080' if QUALITY['p']=='1080p' else '1280:720'
+        cmd[i]=re.sub(r'(?<![\w_])scale=\d+:\d+(?![:\d])',f'scale={wanted}',cmd[i],count=1)
         # Lanczos keeps text and line art crisp when scaling a 1080p source down.
         cmd[i]=re.sub(r'(?<![\w_])scale=(\d+:\d+)(?![:\d])',r'scale=\1:flags=lanczos',cmd[i],count=1)
 
@@ -266,6 +272,7 @@ class CamelotOnline(commands.Bot):
         channel=guild.get_channel(int(channel_id)) if guild else None
         if not isinstance(channel,discord.VoiceChannel):raise ValueError('Voice channel unavailable')
         self.mode='switching'
+        QUALITY['p']='720p' if standby else ('1080p' if job.get('quality')=='1080p' else '720p')
         self.target_channel=channel_id;self.gone_ticks=0;self.fail_reason=''
         # Keep the Go Live connection when it is healthy and only replace the video. Starting a new
         # stream takes ~8-13 s and made every episode change, seek and resume look like a reconnect.
@@ -324,6 +331,7 @@ class CamelotOnline(commands.Bot):
         async with self.play_lock:
             if not self.job:raise ValueError('No episode selected')
             position=float(job.get('position',0))
+            if job.get('quality') in ('720p','1080p'):self.job['quality']=job['quality']
             duration=float(self.job.get('duration') or 0)
             if not duration or not 0<=position<duration:raise ValueError('Seek outside episode duration')
             if self.mode=='paused':

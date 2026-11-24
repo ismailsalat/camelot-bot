@@ -9,7 +9,7 @@ export function addToQueue(s:Session,title:Title):'added'|'duplicate'|'full'{
   if(s.title&&same(s.title,title))return 'duplicate';
   if(s.queue.some(t=>same(t,title)))return 'duplicate';
   if(s.queue.length>=MAX_QUEUE)return 'full';
-  s.queue.push({id:title.id,provider:title.provider,title:title.title,poster:title.poster,aliases:title.aliases});
+  s.queue.push({id:title.id,provider:title.provider,title:title.title,poster:title.poster,aliases:title.aliases,year:title.year,count:title.count,season:title.season,family:title.family});
   return 'added';
 }
 export function removeFromQueue(s:Session,index:number):Title|null{
