@@ -1,3 +1,4 @@
+import {cleanStreamEnv} from './src/envclean.mjs';
 import {WorkerCommands} from './src/commands.mjs';
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
@@ -46,6 +47,7 @@ const log=(kind,text)=>{
 // Last worker output, printed if the worker dies from a signal so the cause is visible in the logs.
 const workerTail=[];
 let safeMode=false;
+let streamConfig=null,envFixes=[];
 function memoryReport(){
   const rd=p=>{try{return readFileSync(p,'utf8').trim()}catch{return null}};
   const max=rd('/sys/fs/cgroup/memory.max')||rd('/sys/fs/cgroup/memory/memory.limit_in_bytes');
@@ -63,13 +65,17 @@ function workerStart(token,guild){
   if(worker.child) throw new Error('Streamer is already running');
   if(typeof token!=='string'||token.length<30||token.length>250||!/^[0-9]{15,22}$/.test(String(guild)))throw new Error('Missing or invalid streaming account token / server ID');
   const python=process.env.PYTHON_BIN || ((CLOUD||INTERNAL)?join(DIR,'.cloud-venv','bin','python'):'/home/'+(process.env.USER||'')+'/.local/share/camelot-tv/venv/bin/python');
-  const childEnv={...process.env, PYTHONUNBUFFERED:'1',STREAM_QUALITY:process.env.STREAM_QUALITY||'720p',
+  const {env:cleanEnv,fixes:foundFixes}=cleanStreamEnv(process.env);
+  envFixes=foundFixes;for(const fix of foundFixes)log('warning','Setting fixed: '+fix);
+  const childEnv={...cleanEnv, PYTHONUNBUFFERED:'1',STREAM_QUALITY:cleanEnv.STREAM_QUALITY||'720p',
     // Measured on Railway: 720p30 held 30.0 fps with no late frames, so the CPU has room. The old 2500k
     // bitrate with the fastest x264 preset is what made it look soft. Raise for a sharper picture:
     //   STREAM_RESOLUTION=1920:1080  STREAM_VIDEO_BITRATE=8000k   (needs more CPU)
     //   STREAM_X264_PRESET=veryfast|faster                         (better quality per bit, more CPU)
-    STREAM_RESOLUTION:process.env.STREAM_RESOLUTION||'1280:720',STREAM_FPS:process.env.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:process.env.STREAM_VIDEO_BITRATE||'6000k',STREAM_X264_PRESET:process.env.STREAM_X264_PRESET||'superfast'};
+    STREAM_RESOLUTION:cleanEnv.STREAM_RESOLUTION||'1280:720',STREAM_FPS:cleanEnv.STREAM_FPS||'30',STREAM_VIDEO_BITRATE:cleanEnv.STREAM_VIDEO_BITRATE||'6000k',STREAM_X264_PRESET:cleanEnv.STREAM_X264_PRESET||'superfast'};
   if(safeMode)Object.assign(childEnv,{STREAM_RESOLUTION:'1280:720',STREAM_FPS:'30',STREAM_VIDEO_BITRATE:'4500k',STREAM_X264_PRESET:'superfast',STREAM_FFMPEG_THREADS:'3'});
+  streamConfig={resolution:childEnv.STREAM_RESOLUTION,fps:childEnv.STREAM_FPS,bitrate:childEnv.STREAM_VIDEO_BITRATE,preset:childEnv.STREAM_X264_PRESET,threads:childEnv.STREAM_FFMPEG_THREADS||'4',safeMode};
+  log('info',`Stream settings: ${childEnv.STREAM_RESOLUTION} at ${childEnv.STREAM_FPS} fps, ${childEnv.STREAM_VIDEO_BITRATE}, x264 ${childEnv.STREAM_X264_PRESET}, ${childEnv.STREAM_FFMPEG_THREADS||'4'} threads${safeMode?' (safe mode)':''}`);
   delete childEnv.CAMELOT_STREAMER_TOKEN;delete childEnv.CAMELOT_ADMIN_KEY;delete childEnv.CAMELOT_BRIDGE_KEY;
   const child=spawn(python,['-u',join(DIR,'runtime','camelot_worker.py')],{
     cwd:join(DIR,'runtime'),
@@ -103,6 +109,11 @@ function workerStart(token,guild){
   }
   log('info','Connecting streaming account to the selected test server');
 }
+/** Most recent FFmpeg complaint from the worker, so a failure says why instead of just 'interrupted'. */
+function lastFfmpegProblem(){
+  for(let i=workerTail.length-1;i>=0;i--){const l=workerTail[i];if(/ffmpeg video:|ffmpeg audio:|Unknown encoder|Error while opening|Invalid|No such file|Connection refused|Server returned|produced no output/i.test(l))return l.replace(/^.*?(WARNING|ERROR)\s+/,'').slice(0,220)}
+  return '';
+}
 function consumeWorkerLine(line,kind){
   workerTail.push(scrub(line).slice(0,300));if(workerTail.length>30)workerTail.shift();
   if(line.startsWith('TV_BRIDGE_JSON:')){
@@ -110,7 +121,7 @@ function consumeWorkerLine(line,kind){
       const e=JSON.parse(line.slice('TV_BRIDGE_JSON:'.length));
       if(commands.accept(e))return;
       if(e.event==='ready'){worker.ready=true;worker.streamerId=e.streamerId;worker.channels=e.channels||[];worker.account=e.streamer||'';if(['offline','connecting','failed'].includes(worker.status))worker.status='connected';log('info',`Connected as ${worker.account} to ${e.server} (${worker.channels.length} channels)`)}
-      else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.failReason=e.event==='failed'?String(e.reason||''):'';worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed')log(e.reason==='kicked'?'warning':'error',e.reason==='kicked'?'Removed from the voice channel; the bot will rejoin':'Playback interrupted; choose another source or retry');}
+      else if(['status','playing','paused','standby','ended','failed'].includes(e.event)){worker.failReason=e.event==='failed'?String(e.reason||''):'';worker.status=e.status||(e.event==='playing'?'streaming':e.event);worker.position=e.position??worker.position;worker.updated=Date.now();if(e.event==='failed'){if(e.reason==='kicked')log('warning','Removed from the voice channel; the bot will rejoin');else{const hint=lastFfmpegProblem();log('error',`Playback interrupted${e.reason?` (${e.reason})`:''}${hint?`. Last FFmpeg message: ${hint}`:''}`);for(const line of workerTail.slice(-6))log('warning','worker: '+line)}}}
       else if(e.event==='starting'){worker.status='starting';worker.position=e.position??0;worker.playing=e.title;worker.voice=e.channel;log('info','Go Live connection starting')}
       else if(e.event==='stream_requested'){worker.status='requested';log('info','Go Live session requested. Check the voice channel.')}
       else if(e.event==='stopped'){worker.status='connected';worker.playing=null;worker.position=0;worker.duration=null;log('info','Stopped playback')}
@@ -188,7 +199,7 @@ async function body(req){
 }
 function state(){return {version:VERSION,cloud:CLOUD,status:worker.status,connected:worker.ready,account:worker.account,
  guild:worker.ready?worker.guild:null,channels:worker.channels,playing:worker.playing,
- position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
+ position:worker.position||0,duration:worker.duration||null,updated:worker.updated||0,streamerId:worker.streamerId,safeMode,config:streamConfig,envFixes,failReason:worker.failReason||'',providers:[],logs:logs.slice(-55),busy:playBusy,lastError};}
 function err(res,e,code=400){const m=String(e?.message||e||'Unknown error').replace(/https?:\/\/[^\s<>"']+/g,'[media URL]');log('error',m);json(res,code,{error:m.slice(0,1800)})}
 const STATIC={'/':'index.html','/ui.js':'ui.js','/ui.css':'ui.css'};
 const TYPES={'index.html':'text/html; charset=utf-8','ui.js':'application/javascript; charset=utf-8','ui.css':'text/css; charset=utf-8'};

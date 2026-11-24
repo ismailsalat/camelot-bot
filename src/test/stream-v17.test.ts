@@ -167,3 +167,14 @@ test('Stop ends the rejoin loop',async()=>{
  tv.rejoinWanted=true;await tv.release();assert.equal(tv.rejoinWanted,false);
  await tv.tick(); // owner is gone, so nothing happens and nothing throws
 });
+
+test('Debug info report shows the stream settings, fixed settings and recent log without links or tokens',async()=>{
+ const tv:any=new Streaming();tv.session=fixture({note:'Could not play. Reason: see https://secret.example/x.m3u8'});
+ tv.bridge={get running(){return true},call:async()=>({version:'0.12',status:'failed',connected:true,safeMode:false,failReason:'',lastError:'Playback interrupted. https://cdn.example/seg.ts',
+  config:{resolution:'1280:720',fps:'30',bitrate:'6000k',preset:'superfast',threads:'4',safeMode:false},envFixes:['STREAM_VIDEO_BITRATE="6000k\'" had stray quotes or spaces; using 6000k'],
+  logs:[{time:'10:00:00',kind:'error',msg:'Unknown encoder at https://cdn.example/a.m3u8'}]})};
+ const text=await tv.debugReport();
+ assert(text.includes('1280:720 at 30 fps · 6000k'));assert(text.includes('Setting fixed'));assert(text.includes('Unknown encoder'));
+ assert(!/https?:\/\//.test(text));assert(text.length<2000);
+ tv.bridge={get running(){return false}};assert(/not running/.test(await tv.debugReport()));
+});

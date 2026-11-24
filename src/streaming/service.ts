@@ -45,6 +45,7 @@ export class Streaming {
   private rejoinAt:number|null=null;
   private lastRejoin=0;
   private autoToken=0;
+  private lastStatusLog=0;
   /** Milliseconds per countdown step (tests set 0). */
   countdownMs=1000;
   private searchResults=new Map<string,{owner:string;session:string;rows:Title[];expires:number}>();
@@ -222,10 +223,12 @@ export class Streaming {
   }
   private async fail(error:unknown){
     if(!this.session||this.stopping||this.closed)return;
+    const detail=this.bridge.running?await this.bridge.call<WorkerState>('/api/state').catch(()=>null):null;
     await this.bridge.disconnect();
+    const why=error instanceof Error?error.message.replace(/https?:\/\/\S+/g,'[source]').replace(/\s+/g,' ').slice(0,300):'unknown error';
     this.session.phase='error';this.session.changed=Date.now();
-    this.session.note='Could not play this episode. Try another source or press Play to reconnect.';
-    log.warn('Streaming playback interrupted: '+(error instanceof Error?error.message.replace(/https?:\/\/\S+/g,'[source]').slice(0,300):'unknown error'));
+    this.session.note='Could not play this episode. Try another source or press Play to reconnect.'+(why&&why!=='unknown error'?`\nReason: ${why.slice(0,140)}`:'');
+    log.warn(`Streaming playback interrupted: ${why} | worker=${detail?.status??'unreachable'} lastError=${(detail?.lastError||'-').slice(0,200)} safeMode=${detail?.safeMode??'-'} episode=${this.session.episodes[this.session.episode]?.number??'-'} source=${this.session.source}`);
     this.persist();await this.paint();
   }
   private async tick(){
@@ -254,6 +257,10 @@ export class Streaming {
           if(this.bump||this.dirty||!s.message)await this.paint();return;
         }
         const w=await this.bridge.call<WorkerState>('/api/state');this.streamerId=w.streamerId;
+        if(Date.now()-this.lastStatusLog>=30000){
+          this.lastStatusLog=Date.now();
+          log.info(`[stream] phase=${s.phase} worker=${w.status} episode=${s.episodes[s.episode]?.number??'-'} position=${Math.round(w.position||0)}s source=${s.actualSource||'-'} retries=${this.retries} queue=${s.queue?.length??0} rejoin=${this.rejoinWanted} safeMode=${w.safeMode??false}${w.failReason?` failReason=${w.failReason}`:''}`);
+        }
         if(w.status==='failed'&&w.failReason==='kicked'&&!this.rejoinWanted)this.markKicked(['playing','paused','loading'].includes(s.phase)?Math.max(s.position,w.position||0):null);
         if(this.rejoinWanted){await this.rejoin(s);return}
         if(w.status==='streaming'){
@@ -515,6 +522,7 @@ export class Streaming {
     }
     await i.deferReply({flags:MessageFlags.Ephemeral});
     if(op==='toggle'){setByPath(member.guild.id,'modules.streaming',!getSettings(member.guild.id).modules.streaming);await i.editReply({components:[settingsCard(member)],flags:V2_PUBLIC,allowedMentions:NO_MENTIONS});return}
+    if(op==='debug'){await i.editReply({content:await this.debugReport(),components:[],allowedMentions:NO_MENTIONS});return}
     if(op==='check'){
       if(this.session?.owner)throw new Error('Stop the active stream before checking the account.');
       await this.gate.run(async()=>{try{await this.bridge.connect(member.guild.id,getToken(member.guild.id))}finally{await this.bridge.close()}});
@@ -531,6 +539,26 @@ export class Streaming {
       if(this.session?.owner)throw new Error('Release the active session first.');await this.gate.run(async()=>{clearToken(member.guild.id);await this.bridge.close()});
     }else if(op==='auto')setByPath(member.guild.id,'streaming.autoNext',!getSettings(member.guild.id).streaming.autoNext);
     await i.editReply({components:[settingsCard(member)],flags:V2_PUBLIC,allowedMentions:NO_MENTIONS});
+  }
+  /** Plain-text status for admins (Settings → Streaming → Debug info). Never includes tokens or media links. */
+  async debugReport():Promise<string>{
+    const s=this.session;
+    const clean=(t:string)=>t.replace(/https?:\/\/\S+/g,'[link]').replace(/\s+/g,' ').trim();
+    const lines=['**Streaming debug** (no tokens or links are shown)'];
+    lines.push(s?`Bot: phase **${s.phase}** · owner ${s.owner?`<@${s.owner}>`:'none'} · episode ${s.episodes[s.episode]?.number??'-'} · source ${s.actualSource||s.source} · queue ${s.queue?.length??0} · rejoin ${this.rejoinWanted?'on':'off'}${s.note?`\nNote: ${clean(s.note).slice(0,160)}`:''}`:'Bot: no active session');
+    let w:WorkerState|null=null;
+    if(this.bridge.running)w=await this.bridge.call<WorkerState>('/api/state').catch(()=>null);
+    if(!w)lines.push('TV service: not running (it starts when someone uses /stream).');
+    else{
+      lines.push(`TV service v${w.version??'?'}: status **${w.status}** · connected ${w.connected} · safe mode ${w.safeMode??false}${w.failReason?` · failReason ${w.failReason}`:''}`);
+      if(w.config)lines.push(`Video: ${w.config.resolution} at ${w.config.fps} fps · ${w.config.bitrate} · x264 ${w.config.preset} · ${w.config.threads} threads`);
+      for(const fix of w.envFixes??[])lines.push('Setting fixed: '+clean(fix).slice(0,200));
+      if(w.lastError)lines.push('Last error: '+clean(w.lastError).slice(0,200));
+      const recent=(w.logs??[]).slice(-10).map(l=>`${l.time} ${l.kind}: ${clean(l.msg).slice(0,140)}`);
+      if(recent.length)lines.push('Recent TV log:\n```\n'+recent.join('\n')+'\n```');
+    }
+    lines.push('The full detail is in the Railway logs; lines starting with [stream] and [tv] are Streaming.');
+    return lines.join('\n').slice(0,1950);
   }
   async close(){this.closed=true;this.stopping=true;this.bridge.cancelRequests();if(this.timer)clearInterval(this.timer);if(this.repaint)clearTimeout(this.repaint);await this.bridge.close();this.persist()}
 }

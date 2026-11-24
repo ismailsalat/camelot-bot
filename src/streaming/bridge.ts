@@ -4,7 +4,7 @@ import {resolve} from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {log} from '../logger.js';
 
-export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean;lastError?:string;failReason?:string}
+export interface WorkerState {status:string;connected:boolean;guild:string|null;position:number;duration:number|null;streamerId?:string;busy:boolean;lastError?:string;failReason?:string;safeMode?:boolean;version?:string;config?:{resolution:string;fps:string;bitrate:string;preset:string;threads:string;safeMode:boolean}|null;envFixes?:string[];logs?:{time:string;kind:string;msg:string}[]}
 export class Bridge {
   private child:ChildProcess|null=null;
   private key=randomBytes(32).toString('hex');
@@ -27,7 +27,7 @@ export class Bridge {
     const env={...process.env,CAMELOT_INTERNAL:'1',CAMELOT_ADMIN_KEY:this.key,PORT:String(this.port)};
     for(const name of ['DISCORD_TOKEN','CAMELOT_STREAMER_TOKEN','CAMELOT_BRIDGE_KEY','STREAMING_SECRET_KEY'])delete (env as Record<string,string|undefined>)[name];
     const child=spawn(process.execPath,[resolve('tv/server.mjs')],{env,detached:process.platform!=='win32',stdio:['ignore','pipe','pipe']});
-    for(const stream of [child.stdout,child.stderr])stream?.on('data',(chunk:Buffer)=>{for(const line of chunk.toString('utf8').split('\n')){const text=line.trim();if(text)log.info('[tv] '+text.slice(0,400))}});
+    for(const stream of [child.stdout,child.stderr])stream?.on('data',(chunk:Buffer)=>{for(const line of chunk.toString('utf8').split('\n')){const text=line.trim();if(text)log.info('[tv] '+text.slice(0,1500))}});
     this.child=child;
     child.on('error',()=>{if(this.child===child)this.child=null;log.warn('TV service could not start. Check the Streaming setup.');});
     child.on('exit',()=>{if(this.child===child)this.child=null;this.killGroup(child)});

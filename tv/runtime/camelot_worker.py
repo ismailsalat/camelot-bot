@@ -19,6 +19,9 @@ _null_fd = os.open(os.devnull, os.O_RDONLY)
 os.dup2(_null_fd, 0)
 os.close(_null_fd)
 
+import env_clean
+env_clean.report(env_clean.clean_stream_env())
+
 import discord
 import discord.gateway
 import discord.voice_state
@@ -107,6 +110,8 @@ def _headers_ffmpeg_cmd(self):
     url=str(getattr(self,'_url',''))
     cmd=apply_source_options(cmd, _source_headers.get(url, {}), _source_hls.get(url, False), _source_subtitles.get(url))
     _tune_x264(cmd)
+    repaired=env_clean.safe_bitrate_args(cmd)
+    if repaired:logging.getLogger('camelot_online').warning('Repaired invalid FFmpeg bitrate settings: %s',', '.join(repaired))
     index=cmd.index('-i')
     offset=_source_offsets.get(url,0)
     if url==STANDBY:cmd[index:index]=['-stream_loop','-1']

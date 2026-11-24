@@ -74,3 +74,31 @@ class X264TuningTests(unittest.TestCase):
             self.assertEqual(c2[c2.index('-preset') + 1], 'ultrafast')
         finally:
             os.environ.pop('STREAM_X264_PRESET', None)
+
+
+class EnvCleanTests(unittest.TestCase):
+    def setUp(self):
+        import sys, pathlib
+        sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / 'runtime'))
+        import env_clean
+        self.ec = env_clean
+
+    def test_stray_apostrophe_on_bitrate_is_removed(self):
+        env = {'STREAM_VIDEO_BITRATE': "6000k'"}
+        fixes = self.ec.clean_stream_env(env)
+        self.assertEqual(env['STREAM_VIDEO_BITRATE'], '6000k')
+        self.assertIn('stray quotes', fixes[0])
+
+    def test_invalid_values_are_dropped(self):
+        env = {'STREAM_VIDEO_BITRATE': 'fast', 'STREAM_FPS': '999', 'STREAM_X264_PRESET': 'placebo', 'STREAM_RESOLUTION': ' "1280x720" '}
+        fixes = self.ec.clean_stream_env(env)
+        self.assertEqual(env, {'STREAM_RESOLUTION': '1280:720'})
+        self.assertEqual(len(fixes), 4)  # three dropped, one cleaned
+
+    def test_finished_command_with_bad_bitrate_is_repaired(self):
+        cmd = ['ffmpeg', '-c:v', 'libx264', '-b:v', "6000k'", '-maxrate', "6000k'", '-bufsize', '12000k']
+        bad = self.ec.safe_bitrate_args(cmd)
+        self.assertEqual(cmd[cmd.index('-b:v') + 1], '6000k')
+        self.assertEqual(cmd[cmd.index('-maxrate') + 1], '6000k')
+        self.assertEqual(cmd[cmd.index('-bufsize') + 1], '12000k')
+        self.assertEqual(len(bad), 2)
